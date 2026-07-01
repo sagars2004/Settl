@@ -1,0 +1,72 @@
+{
+  "_metadata": {
+    "major_version": 2,
+    "minor_version": 1
+  },
+  "display_information": {
+    "name": "Settl",
+    "description": "Shared expense tracking and settlement, right inside Slack.",
+    "background_color": "#1d4ed8",
+    "long_description": "Settl turns any Slack message into a tracked, actionable expense. Log costs in plain English with @Settl, track a running tab per group or channel, and settle up in one command. Splitwise sync and live currency conversion included."
+  },
+  "features": {
+    "app_home": {
+      "home_tab_enabled": true,
+      "messages_tab_enabled": true,
+      "messages_tab_read_only_enabled": false
+    },
+    "bot_user": {
+      "display_name": "Settl",
+      "always_online": true
+    },
+    "assistant_view": {
+      "assistant_description": "Log, track, and settle shared expenses conversationally.",
+      "suggested_prompts": [
+        { "title": "Log an expense", "message": "Split the $84 dinner equally among the 4 of us" },
+        { "title": "View the tab", "message": "What does everyone owe right now?" }
+      ]
+    },
+    "slash_commands": [
+      {
+        "command": "/settl",
+        "description": "Track and settle shared expenses",
+        "usage_hint": "add | summary | settle @user | create [name] | members | connect splitwise | remind [frequency]",
+        "should_escape": true
+      }
+    ]
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": [
+        "app_mentions:read",
+        "assistant:write",
+        "channels:history",
+        "channels:read",
+        "chat:write",
+        "commands",
+        "groups:history",
+        "groups:read",
+        "im:history",
+        "im:read",
+        "im:write",
+        "users:read",
+        "users:read.email"
+      ]
+    }
+  },
+  "settings": {
+    "event_subscriptions": {
+      "bot_events": [
+        "app_mention",
+        "assistant_thread_started",
+        "message.im"
+      ]
+    },
+    "interactivity": {
+      "is_enabled": true
+    },
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": true,
+    "token_rotation_enabled": false
+  }
+}

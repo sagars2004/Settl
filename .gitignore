@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# Environment variables (never commit real secrets)
+.env
+.env.local
+
+# Slack CLI local state (auto-generated per developer)
+.slack/apps.json
+.slack/apps.dev.json
+.slack/cache/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# OS / editor cruft
+.DS_Store
+.idea/
+.vscode/
+*.swp

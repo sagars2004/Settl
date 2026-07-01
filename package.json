@@ -1,0 +1,35 @@
+{
+  "name": "settl",
+  "version": "1.0.0",
+  "description": "Settl — a native Slack agent for shared expense tracking and settlement, powered by Slack AI, the Splitwise MCP, and the Real-Time Search API.",
+  "type": "module",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "lint": "eslint . --ext .js",
+    "format": "prettier --write \"**/*.{js,json,md}\""
+  },
+  "keywords": [
+    "slack",
+    "slack-agent",
+    "bolt",
+    "expenses",
+    "splitwise",
+    "mcp",
+    "fintech"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@slack/bolt": "^4.1.0",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "eslint": "^9.13.0",
+    "prettier": "^3.3.3"
+  }
+}
