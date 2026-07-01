@@ -83,14 +83,36 @@ export function buildSettleMessage(counterparty, balances) {
 }
 
 /**
- * Roster + totals for `/settl members`.
+ * Roster for `/settl members`.
  * @param {object|null} group
  * @param {string[]} members  Slack user ids
  * @returns {object[]}
  */
 export function buildMembersMessage(group, members = []) {
+  if (!group) {
+    return [
+      { type: 'header', text: { type: 'plain_text', text: 'No group yet' } },
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: 'Run `/settl create [name] @member1 @member2` to set up a group in this channel.',
+        },
+      },
+    ];
+  }
+
   return [
-    { type: 'header', text: { type: 'plain_text', text: `Members — ${group?.name ?? 'This channel'}` } },
+    { type: 'header', text: { type: 'plain_text', text: `Members — ${group.name}` } },
+    {
+      type: 'context',
+      elements: [
+        {
+          type: 'mrkdwn',
+          text: `${members.length} member${members.length === 1 ? '' : 's'} · base currency ${group.base_currency ?? 'USD'}`,
+        },
+      ],
+    },
     {
       type: 'section',
       text: {
@@ -101,6 +123,51 @@ export function buildMembersMessage(group, members = []) {
       },
     },
   ];
+}
+
+/**
+ * Confirmation after `/settl create`.
+ * @param {object} group  persisted settl_groups record
+ * @param {string[]} [unresolvedHandles]  @handles that could not be matched
+ * @returns {object[]}
+ */
+export function buildGroupCreatedMessage(group, unresolvedHandles = []) {
+  const memberLines = (group.members ?? []).map((id) => `• <@${id}>`).join('\n');
+  const blocks = [
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `:tada: Created group *${group.name}* in this channel.`,
+      },
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*Members (${group.members?.length ?? 0}):*\n${memberLines}`,
+      },
+    },
+  ];
+
+  if (unresolvedHandles.length) {
+    blocks.push({
+      type: 'context',
+      elements: [
+        {
+          type: 'mrkdwn',
+          text: `Could not find ${unresolvedHandles.map((h) => `@${h}`).join(', ')}. Pick users from Slack's @ menu when typing the command.`,
+        },
+      ],
+    });
+  }
+
+  blocks.push({
+    type: 'context',
+    elements: [{ type: 'mrkdwn', text: 'Log expenses with `@Settl` or `/settl add`.' }],
+  });
+
+  return blocks;
 }
 
 /**
@@ -140,6 +207,7 @@ export function buildHelpMessage() {
           '`/settl members` — list group members',
           '`/settl connect splitwise` — link Splitwise',
           '`/settl remind [frequency]` — set nudge cadence',
+          '`/settl reset` — delete this channel\'s group (dev)',
         ].join('\n'),
       },
     },

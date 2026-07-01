@@ -30,7 +30,7 @@
       {
         "command": "/settl",
         "description": "Track and settle shared expenses",
-        "usage_hint": "add | summary | settle @user | create [name] | members | connect splitwise | remind [frequency]",
+        "usage_hint": "add | summary | settle @user | create [name] | members | connect splitwise | remind [frequency] | reset",
         "should_escape": true
       }
     ]

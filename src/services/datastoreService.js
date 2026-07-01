@@ -6,7 +6,7 @@
 // ---------------------------------------------------------------------------
 
 import { DATASTORES } from '../../datastores/schema.js';
-import { getItem, putItem, queryItems } from './datastoreClient.js';
+import { getItem, putItem, queryItems, deleteItem } from './datastoreClient.js';
 
 /**
  * Generate a short, prefixed id (e.g. "grp_ab12cd", "exp_9f8e7d").
@@ -118,6 +118,30 @@ export async function listGroups() {
 export async function listGroupMembers(groupId) {
   const group = await getGroup(groupId);
   return group?.members ?? [];
+}
+
+/**
+ * Delete the group for a channel and all of its expenses (dev/testing helper).
+ * @param {string} channelId
+ * @returns {Promise<{ deleted: boolean, groupName?: string, expenseCount: number }>}
+ */
+export async function resetGroupByChannel(channelId) {
+  const group = await getGroupByChannel(channelId);
+  if (!group) {
+    return { deleted: false, expenseCount: 0 };
+  }
+
+  const expenses = await getGroupExpenses(group.group_id);
+  for (const expense of expenses) {
+    await deleteItem(DATASTORES.EXPENSES, expense.expense_id);
+  }
+  await deleteItem(DATASTORES.GROUPS, group.group_id);
+
+  return {
+    deleted: true,
+    groupName: group.name,
+    expenseCount: expenses.length,
+  };
 }
 
 // --- Expenses (settl_expenses) ----------------------------------------------

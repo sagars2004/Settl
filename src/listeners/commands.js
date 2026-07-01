@@ -11,14 +11,18 @@ import {
   createGroup,
   getGroupExpenses,
   listGroupMembers,
+  resetGroupByChannel,
 } from '../services/datastoreService.js';
 import { calculateBalances } from '../utils/balanceCalculator.js';
 import {
   buildSummaryMessage,
   buildSettleMessage,
   buildMembersMessage,
+  buildGroupCreatedMessage,
   buildHelpMessage,
 } from '../utils/formatter.js';
+import { parseCreateGroupArgs } from '../utils/groupParser.js';
+import { resolveUserHandles } from '../utils/userResolver.js';
 import { startSplitwiseOAuth } from '../services/splitwiseMCP.js';
 import { setReminderCadence } from '../agents/nudgeAgent.js';
 
@@ -52,6 +56,8 @@ export function registerCommandListeners(app) {
           return handleConnect({ command, args, respond });
         case 'remind':
           return handleRemind({ command, args, respond });
+        case 'reset':
+          return handleReset({ command, respond });
         default:
           return respond({ blocks: buildHelpMessage(), text: 'Settl help' });
       }
@@ -89,20 +95,30 @@ async function handleSettle({ command, args, respond }) {
 
 /** `/settl create [name] @a @b` — initialize a group bound to this channel. */
 async function handleCreate({ command, args, respond, client }) {
-  // TODO (task 2): extract group name and @mentioned members from `args`.
+  const parsed = parseCreateGroupArgs(args, command.user_id);
+  const { resolved, unresolved } = await resolveUserHandles(client, parsed.bareHandles);
+  const members = [...new Set([...parsed.members, ...resolved])];
+
   try {
     const group = await createGroup({
-      name: args || 'This channel',
+      name: parsed.name,
       channelId: command.channel_id,
-      members: [command.user_id],
+      members,
     });
+
+    let text = `Created group ${group.name} with ${group.members.length} members.`;
+    if (unresolved.length) {
+      text += ` Could not find: ${unresolved.map((h) => `@${h}`).join(', ')}. Use Slack's @ autocomplete to pick users.`;
+    }
+
     await respond({
-      text: `Created group *${group.name}* in this channel. Add expenses with @Settl.`,
+      blocks: buildGroupCreatedMessage(group, unresolved),
+      text,
     });
   } catch (error) {
     if (error.code === 'group_exists') {
       return respond({
-        text: `This channel already has a group: *${error.group.name}*. Run \`/settl summary\` to view the tab.`,
+        text: `This channel already has a group: *${error.group.name}*. Run \`/settl members\` to see the roster.`,
       });
     }
     throw error;
@@ -112,8 +128,26 @@ async function handleCreate({ command, args, respond, client }) {
 /** `/settl members` — show current roster and per-member totals. */
 async function handleMembers({ command, respond }) {
   const group = await getGroupByChannel(command.channel_id);
-  const members = await listGroupMembers(group?.group_id);
-  await respond({ blocks: buildMembersMessage(group, members), text: 'Group members' });
+  const members = group ? await listGroupMembers(group.group_id) : [];
+  await respond({
+    blocks: buildMembersMessage(group, members),
+    text: group ? `Members of ${group.name}` : 'No group in this channel',
+  });
+}
+
+/** `/settl reset` — delete this channel's group and expenses (for local dev). */
+async function handleReset({ command, respond }) {
+  const result = await resetGroupByChannel(command.channel_id);
+  if (!result.deleted) {
+    return respond({ text: 'No group in this channel to reset.' });
+  }
+  const expenseNote =
+    result.expenseCount > 0
+      ? ` and ${result.expenseCount} expense${result.expenseCount === 1 ? '' : 's'}`
+      : '';
+  await respond({
+    text: `Reset complete — deleted *${result.groupName}*${expenseNote}. Run \`/settl create\` to start fresh.`,
+  });
 }
 
 /** `/settl connect splitwise` — kick off the Splitwise OAuth flow. */
