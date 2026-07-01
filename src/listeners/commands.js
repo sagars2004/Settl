@@ -24,6 +24,7 @@ import {
 import { parseCreateGroupArgs } from '../utils/groupParser.js';
 import { resolveUserHandles } from '../utils/userResolver.js';
 import { startSplitwiseOAuth } from '../services/splitwiseMCP.js';
+import { logExpense } from '../services/expensePipeline.js';
 import { setReminderCadence } from '../agents/nudgeAgent.js';
 
 /**
@@ -43,7 +44,7 @@ export function registerCommandListeners(app) {
     try {
       switch (subcommand) {
         case 'add':
-          return handleAdd({ command, args, respond });
+          return handleAdd({ command, args, respond, client, logger });
         case 'summary':
           return handleSummary({ command, respond });
         case 'settle':
@@ -71,9 +72,23 @@ export function registerCommandListeners(app) {
 // --- Subcommand handlers (stubs) --------------------------------------------
 
 /** `/settl add <expense>` — structured alternative to @mention logging. */
-async function handleAdd({ command, args, respond }) {
-  // TODO: reuse the mention pipeline (parse -> persist -> confirm) with `args`.
-  await respond({ text: `TODO: parse and log expense: "${args}"` });
+async function handleAdd({ command, args, respond, client, logger }) {
+  if (!args.trim()) {
+    return respond({
+      text: 'Usage: `/settl add $84 dinner split 3 ways` — or just `@Settl` in plain English.',
+    });
+  }
+
+  const result = await logExpense({
+    text: args,
+    channelId: command.channel_id,
+    userId: command.user_id,
+    client,
+    reply: (payload) => respond(payload),
+    logger,
+  });
+
+  if (!result.ok) return;
 }
 
 /** `/settl summary` — per-channel / per-group balance breakdown. */

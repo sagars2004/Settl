@@ -9,23 +9,77 @@
 import { ACTION_IDS } from '../listeners/actions.js';
 
 /**
+ * Format a currency amount for display.
+ * @param {string} currency
+ * @param {number} amount
+ */
+function formatMoney(currency, amount) {
+  const symbolMap = { USD: '$', EUR: '€', GBP: '£', JPY: '¥' };
+  const symbol = symbolMap[currency] ?? `${currency} `;
+  const formatted = Number(amount).toFixed(2).replace(/\.00$/, '');
+  return `${symbol}${formatted}`;
+}
+
+/**
  * Confirmation shown after an expense is logged (posted in-thread).
  * @param {object} expense   persisted settl_expenses record
  * @param {import('./balanceCalculator.js').BalanceResult} balances
+ * @param {object} [group]   settl_groups record
  * @returns {object[]} Block Kit blocks
  */
-export function buildExpenseConfirmation(expense, balances) {
-  return [
+export function buildExpenseConfirmation(expense, balances, group) {
+  const payerLine = `• <@${expense.paid_by}> paid *${formatMoney(expense.currency, expense.total_amount)}*`;
+  const shareLines = (expense.splits ?? [])
+    .filter((split) => split.user_id !== expense.paid_by)
+    .map((split) => `• <@${split.user_id}> owes *${formatMoney(expense.currency, split.amount)}*`);
+
+  const payerShare = (expense.splits ?? []).find((split) => split.user_id === expense.paid_by);
+  const payerOwesLine =
+    payerShare && payerShare.amount > 0
+      ? `• <@${expense.paid_by}> owes *${formatMoney(expense.currency, payerShare.amount)}* (their share)`
+      : null;
+
+  const splitText = [payerLine, ...shareLines, payerOwesLine].filter(Boolean).join('\n');
+
+  const blocks = [
     {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `:white_check_mark: Logged *${expense.currency} ${expense.total_amount}* — _${expense.description}_`,
+        text: `:white_check_mark: Logged *${formatMoney(expense.currency, expense.total_amount)}* — _${expense.description}_`,
       },
     },
-    // TODO: render per-member split lines and the updated running tab.
-    { type: 'context', elements: [{ type: 'mrkdwn', text: 'Tap `/settl summary` to see the full tab.' }] },
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: `*This expense*\n${splitText}` },
+    },
   ];
+
+  const tabLines = (balances.netBalances ?? [])
+    .filter((entry) => Math.abs(entry.net) >= 0.01)
+    .map((entry) => {
+      if (entry.net > 0) {
+        return `• <@${entry.userId}> is owed *${formatMoney(expense.currency, entry.net)}*`;
+      }
+      return `• <@${entry.userId}> owes *${formatMoney(expense.currency, Math.abs(entry.net))}*`;
+    });
+
+  if (tabLines.length) {
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*Running tab — ${group?.name ?? 'This channel'}*\n${tabLines.join('\n')}`,
+      },
+    });
+  }
+
+  blocks.push({
+    type: 'context',
+    elements: [{ type: 'mrkdwn', text: 'Run `/settl summary` for the full tab.' }],
+  });
+
+  return blocks;
 }
 
 /**

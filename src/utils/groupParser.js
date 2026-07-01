@@ -5,8 +5,8 @@
 // (e.g. @user1) which are resolved separately via users.list.
 // ---------------------------------------------------------------------------
 
-const SLACK_MENTION_PATTERN = /<@(U[A-Z0-9]+)(?:\|[^>]+)?>/g;
-const BARE_MENTION_PATTERN = /(?:^|\s)@([\w.-]+)/g;
+export const SLACK_MENTION_PATTERN = /<@(U[A-Z0-9]+)(?:\|[^>]+)?>/g;
+export const BARE_MENTION_PATTERN = /(?:^|\s)@([\w.-]+)/g;
 
 /**
  * Parse `/settl create [name] @a @b` into a group name and member user ids.
