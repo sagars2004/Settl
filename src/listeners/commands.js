@@ -89,13 +89,24 @@ async function handleSettle({ command, args, respond }) {
 
 /** `/settl create [name] @a @b` — initialize a group bound to this channel. */
 async function handleCreate({ command, args, respond, client }) {
-  // TODO: extract group name and @mentioned members from `args`.
-  const group = await createGroup({
-    name: args,
-    channelId: command.channel_id,
-    members: [command.user_id],
-  });
-  await respond({ text: `Created group "${group?.name ?? args}". Add expenses with @Settl.` });
+  // TODO (task 2): extract group name and @mentioned members from `args`.
+  try {
+    const group = await createGroup({
+      name: args || 'This channel',
+      channelId: command.channel_id,
+      members: [command.user_id],
+    });
+    await respond({
+      text: `Created group *${group.name}* in this channel. Add expenses with @Settl.`,
+    });
+  } catch (error) {
+    if (error.code === 'group_exists') {
+      return respond({
+        text: `This channel already has a group: *${error.group.name}*. Run \`/settl summary\` to view the tab.`,
+      });
+    }
+    throw error;
+  }
 }
 
 /** `/settl members` — show current roster and per-member totals. */

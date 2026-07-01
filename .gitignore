@@ -10,6 +10,9 @@ node_modules/
 .slack/apps.dev.json
 .slack/cache/
 
+# Local JSON persistence (Bolt apps cannot use Slack Datastores on slack run)
+.data/
+
 # Logs
 logs/
 *.log

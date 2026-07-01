@@ -13,6 +13,7 @@ import { registerMentionListeners } from './listeners/mentions.js';
 import { registerCommandListeners } from './listeners/commands.js';
 import { registerActionListeners } from './listeners/actions.js';
 import { startNudgeAgent } from './agents/nudgeAgent.js';
+import { bindDatastoreClient } from './services/datastoreClient.js';
 
 const { App, LogLevel } = pkg;
 
@@ -47,6 +48,9 @@ const app = new App({
 registerMentionListeners(app); // @Settl natural-language expense logging
 registerCommandListeners(app); // /settl slash command subcommands
 registerActionListeners(app); // Block Kit button interactions
+
+// Wire the Slack WebClient into the datastore layer.
+bindDatastoreClient(app.client);
 
 // Global error handler — keeps a single expense failure from crashing the app.
 app.error(async (error) => {

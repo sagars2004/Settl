@@ -42,10 +42,10 @@ export const settlExpenses = {
     total_amount: { type: 'double' },
     currency: { type: 'string' },
     paid_by: { type: 'string' },
-    splits: { type: 'array', items: { type: 'object' } }, // { user_id, amount }
+    splits_json: { type: 'string' }, // JSON array of { user_id, amount }
     created_at: { type: 'string' },
     settled: { type: 'boolean' },
-    splitwise_expense_id: { type: 'string' }, // nullable
+    splitwise_expense_id: { type: 'string' },
   },
 };
 
@@ -60,5 +60,7 @@ export const settlUserTokens = {
   },
 };
 
-// Convenience export for manifest generation / bulk registration.
+// Schema reference for the PRD data model. Local dev persists to .data/*.json.
+// Slack-hosted Datastores (manifest "datastores" block) require slack deploy and
+// a workflow app type — not available for Bolt + slack run.
 export const ALL_DATASTORES = [settlGroups, settlExpenses, settlUserTokens];

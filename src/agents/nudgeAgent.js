@@ -6,7 +6,7 @@
 // is configurable per channel via `/settl remind [frequency]`.
 // ---------------------------------------------------------------------------
 
-import { getGroupExpenses } from '../services/datastoreService.js';
+import { getGroupExpenses, listGroups } from '../services/datastoreService.js';
 import { calculateBalances } from '../utils/balanceCalculator.js';
 import { buildNudgeMessage } from '../utils/formatter.js';
 
@@ -56,8 +56,7 @@ export async function setReminderCadence(channelId, frequency) {
  * @param {import('@slack/bolt').App} app
  */
 async function runSweep(app) {
-  // TODO: enumerate all groups from the datastore (needs a list/query helper).
-  const groups = []; // placeholder
+  const groups = await listGroups();
   for (const group of groups) {
     const expenses = await getGroupExpenses(group.group_id);
     const { debts } = calculateBalances(group, expenses);

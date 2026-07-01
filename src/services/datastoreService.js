@@ -1,15 +1,12 @@
 // ---------------------------------------------------------------------------
 // Datastore service — CRUD helpers over Slack Datastores.
 // ---------------------------------------------------------------------------
-// Wraps the apps.datastore.* Web API methods (put / get / query / delete) for
-// the three datastores defined in datastores/schema.js:
-//   - settl_groups        expense groups bound to channels
-//   - settl_expenses      individual logged expenses + splits
-//   - settl_user_tokens   per-user Splitwise OAuth tokens
-// Every function is a stub returning shapes matching the PRD data model.
+// Wraps apps.datastore.* for settl_groups, settl_expenses, and
+// settl_user_tokens. Requires bindDatastoreClient() before use.
 // ---------------------------------------------------------------------------
 
 import { DATASTORES } from '../../datastores/schema.js';
+import { getItem, putItem, queryItems } from './datastoreClient.js';
 
 /**
  * Generate a short, prefixed id (e.g. "grp_ab12cd", "exp_9f8e7d").
@@ -20,6 +17,34 @@ function generateId(prefix) {
   return `${prefix}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+/** @param {object|null|undefined} item */
+function hydrateGroup(item) {
+  if (!item) return null;
+  return {
+    ...item,
+    members: item.members ?? [],
+    splitwise_group_id: item.splitwise_group_id || null,
+  };
+}
+
+/** @param {object} item */
+function hydrateExpense(item) {
+  let splits = [];
+  if (item.splits_json) {
+    try {
+      splits = JSON.parse(item.splits_json);
+    } catch {
+      splits = [];
+    }
+  }
+  return {
+    ...item,
+    splits,
+    settled: Boolean(item.settled),
+    splitwise_expense_id: item.splitwise_expense_id || null,
+  };
+}
+
 // --- Groups (settl_groups) --------------------------------------------------
 
 /**
@@ -28,17 +53,37 @@ function generateId(prefix) {
  * @returns {Promise<object>} the created settl_groups record
  */
 export async function createGroup({ name, channelId, members, baseCurrency }) {
+  const existing = await getGroupByChannel(channelId);
+  if (existing) {
+    const err = new Error(`A group already exists for this channel: "${existing.name}"`);
+    err.code = 'group_exists';
+    err.group = existing;
+    throw err;
+  }
+
   const record = {
     group_id: generateId('grp'),
     name,
     channel_id: channelId,
-    members,
+    members: [...new Set(members)],
     base_currency: baseCurrency || process.env.DEFAULT_BASE_CURRENCY || 'USD',
     created_at: new Date().toISOString(),
-    splitwise_group_id: null,
+    splitwise_group_id: '',
   };
-  // TODO: await client.apps.datastore.put({ datastore: DATASTORES.GROUPS, item: record });
-  return record;
+
+  await putItem(DATASTORES.GROUPS, record);
+  return hydrateGroup(record);
+}
+
+/**
+ * Fetch a group by primary key.
+ * @param {string} groupId
+ * @returns {Promise<object|null>}
+ */
+export async function getGroup(groupId) {
+  if (!groupId) return null;
+  const item = await getItem(DATASTORES.GROUPS, groupId);
+  return hydrateGroup(item);
 }
 
 /**
@@ -47,8 +92,22 @@ export async function createGroup({ name, channelId, members, baseCurrency }) {
  * @returns {Promise<object|null>}
  */
 export async function getGroupByChannel(channelId) {
-  // TODO: query DATASTORES.GROUPS with an expression on `channel_id`.
-  return null;
+  if (!channelId) return null;
+  const items = await queryItems(DATASTORES.GROUPS, {
+    expression: '#channel_id = :channel_id',
+    expression_attributes: { '#channel_id': 'channel_id' },
+    expression_values: { ':channel_id': channelId },
+  });
+  return hydrateGroup(items[0] ?? null);
+}
+
+/**
+ * List all groups (used by the nudge agent sweep).
+ * @returns {Promise<object[]>}
+ */
+export async function listGroups() {
+  const items = await queryItems(DATASTORES.GROUPS, {});
+  return items.map(hydrateGroup);
 }
 
 /**
@@ -57,8 +116,8 @@ export async function getGroupByChannel(channelId) {
  * @returns {Promise<string[]>}
  */
 export async function listGroupMembers(groupId) {
-  // TODO: get the group record and return its `members` array.
-  return [];
+  const group = await getGroup(groupId);
+  return group?.members ?? [];
 }
 
 // --- Expenses (settl_expenses) ----------------------------------------------
@@ -69,20 +128,22 @@ export async function listGroupMembers(groupId) {
  * @returns {Promise<object>} the created settl_expenses record
  */
 export async function createExpense(parsed) {
+  const splits = parsed.customSplits ?? parsed.splits ?? [];
   const record = {
     expense_id: generateId('exp'),
-    group_id: parsed.groupId ?? null,
+    group_id: parsed.groupId ?? '',
     description: parsed.description ?? '',
     total_amount: parsed.amount ?? 0,
     currency: parsed.currency ?? 'USD',
-    paid_by: parsed.paidBy ?? null,
-    splits: parsed.customSplits ?? [],
+    paid_by: parsed.paidBy ?? '',
+    splits_json: JSON.stringify(splits),
     created_at: new Date().toISOString(),
     settled: false,
-    splitwise_expense_id: null,
+    splitwise_expense_id: '',
   };
-  // TODO: await client.apps.datastore.put({ datastore: DATASTORES.EXPENSES, item: record });
-  return record;
+
+  await putItem(DATASTORES.EXPENSES, record);
+  return hydrateExpense(record);
 }
 
 /**
@@ -92,19 +153,37 @@ export async function createExpense(parsed) {
  */
 export async function getGroupExpenses(groupId) {
   if (!groupId) return [];
-  // TODO: query DATASTORES.EXPENSES on `group_id`.
-  return [];
+  const items = await queryItems(DATASTORES.EXPENSES, {
+    expression: '#group_id = :group_id',
+    expression_attributes: { '#group_id': 'group_id' },
+    expression_values: { ':group_id': groupId },
+  });
+  return items.map(hydrateExpense);
 }
 
 /**
- * Mark all outstanding expenses between the current user and a counterparty
- * as settled.
+ * Mark all outstanding expenses involving a counterparty as settled.
  * @param {string} groupId
  * @param {string} counterpartyId
  */
 export async function markBalanceSettled(groupId, counterpartyId) {
-  // TODO: query the relevant expenses and put updated `settled: true` records.
-  return { groupId, counterpartyId, settled: true };
+  const expenses = await getGroupExpenses(groupId);
+  const toSettle = expenses.filter(
+    (exp) =>
+      !exp.settled &&
+      (exp.paid_by === counterpartyId ||
+        exp.splits.some((s) => s.user_id === counterpartyId)),
+  );
+
+  for (const expense of toSettle) {
+    await putItem(DATASTORES.EXPENSES, {
+      ...expense,
+      splits_json: JSON.stringify(expense.splits),
+      settled: true,
+    });
+  }
+
+  return { groupId, counterpartyId, settledCount: toSettle.length };
 }
 
 // --- User tokens (settl_user_tokens) ----------------------------------------
@@ -115,8 +194,8 @@ export async function markBalanceSettled(groupId, counterpartyId) {
  * @returns {Promise<object|null>}
  */
 export async function getUserToken(userId) {
-  // TODO: get DATASTORES.USER_TOKENS by primary key `user_id`.
-  return null;
+  if (!userId) return null;
+  return getItem(DATASTORES.USER_TOKENS, userId);
 }
 
 /**
@@ -126,6 +205,6 @@ export async function getUserToken(userId) {
  */
 export async function saveUserToken(userId, token) {
   const record = { user_id: userId, ...token };
-  // TODO: await client.apps.datastore.put({ datastore: DATASTORES.USER_TOKENS, item: record });
+  await putItem(DATASTORES.USER_TOKENS, record);
   return record;
 }
