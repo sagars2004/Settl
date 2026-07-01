@@ -6,7 +6,7 @@
 // scheduler, and begins listening for Slack events (Socket Mode by default).
 // ---------------------------------------------------------------------------
 
-import 'dotenv/config';
+import { config } from 'dotenv';
 import pkg from '@slack/bolt';
 
 import { registerMentionListeners } from './listeners/mentions.js';
@@ -16,15 +16,29 @@ import { startNudgeAgent } from './agents/nudgeAgent.js';
 
 const { App, LogLevel } = pkg;
 
-// Instantiate the Bolt app. Socket Mode lets us run locally without a public
-// HTTP endpoint; flip SLACK_SOCKET_MODE to "false" to serve over HTTP + ngrok.
+// Load .env without overriding tokens the Slack CLI injects during `slack run`.
+config({ override: false });
+
+// Prefer CLI-injected tokens (slack run) over .env placeholders.
+const botToken = process.env.SLACK_CLI_XOXB ?? process.env.SLACK_BOT_TOKEN;
+const appToken = process.env.SLACK_CLI_XAPP ?? process.env.SLACK_APP_TOKEN;
+
+if (!botToken || !appToken) {
+  console.warn(
+    '[settl] Missing bot/app token. When using `slack run`, leave SLACK_BOT_TOKEN and SLACK_APP_TOKEN blank in .env so the CLI can inject them.',
+  );
+}
+
+// Socket Mode avoids a public HTTP endpoint during local dev.
 const socketMode = process.env.SLACK_SOCKET_MODE !== 'false';
 
 const app = new App({
-  token: process.env.SLACK_BOT_TOKEN,
-  signingSecret: process.env.SLACK_SIGNING_SECRET,
+  token: botToken,
+  ...(process.env.SLACK_SIGNING_SECRET
+    ? { signingSecret: process.env.SLACK_SIGNING_SECRET }
+    : {}),
   socketMode,
-  appToken: socketMode ? process.env.SLACK_APP_TOKEN : undefined,
+  appToken: socketMode ? appToken : undefined,
   logLevel: process.env.LOG_LEVEL === 'debug' ? LogLevel.DEBUG : LogLevel.INFO,
 });
 
@@ -43,14 +57,18 @@ app.error(async (error) => {
 
 // Boot sequence.
 (async () => {
-  const port = Number(process.env.PORT) || 3000;
-  await app.start(socketMode ? undefined : port);
+  if (socketMode) {
+    await app.start();
+  } else {
+    const port = Number(process.env.PORT) || 3000;
+    await app.start(port);
+  }
 
   // Kick off the background scheduler that pings channels with aging balances.
   startNudgeAgent(app);
 
   console.log(
-    `⚡️ Settl is running (${socketMode ? 'Socket Mode' : `HTTP :${port}`})`,
+    `⚡️ Settl is running (${socketMode ? 'Socket Mode' : `HTTP :${process.env.PORT || 3000}`})`,
   );
 })();
 

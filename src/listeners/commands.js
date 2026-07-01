@@ -28,6 +28,8 @@ import { setReminderCadence } from '../agents/nudgeAgent.js';
  */
 export function registerCommandListeners(app) {
   app.command('/settl', async ({ command, ack, respond, client, logger }) => {
+    logger.info(`[commands] received /settl text="${command.text}"`);
+
     // Acknowledge within 3s to satisfy Slack's slash-command contract.
     await ack();
 

@@ -1,8 +1,6 @@
 {
-  "$schema": "https://raw.githubusercontent.com/slackapi/slack-cli/main/schema/config.json",
-  "project_id": "REPLACE_WITH_GENERATED_PROJECT_ID",
   "manifest": {
     "source": "local"
   },
-  "runtime": "node"
+  "project_id": "c3dfd58b-7ef3-4517-87b2-0e5ef6c2d059"
 }
