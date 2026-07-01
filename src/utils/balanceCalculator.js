@@ -39,9 +39,13 @@ export function calculateBalances(group, expenses = []) {
     const payer = expense.paid_by;
     // Credit the payer for the full amount they fronted.
     net.set(payer, (net.get(payer) ?? 0) + (expense.total_amount ?? 0));
-    // Debit each participant for their share.
+    // Debit unsettled shares; settled shares reduce the payer's outstanding credit.
     for (const split of expense.splits ?? []) {
-      net.set(split.user_id, (net.get(split.user_id) ?? 0) - (split.amount ?? 0));
+      if (split.settled) {
+        net.set(payer, (net.get(payer) ?? 0) - (split.amount ?? 0));
+      } else {
+        net.set(split.user_id, (net.get(split.user_id) ?? 0) - (split.amount ?? 0));
+      }
     }
   }
 
@@ -59,7 +63,55 @@ export function calculateBalances(group, expenses = []) {
  * @returns {PairwiseDebt[]}
  */
 export function simplifyDebts(netBalances) {
-  // TODO: implement greedy debt minimization (largest creditor vs largest
-  // debtor). Returns an empty list until the algorithm lands.
-  return [];
+  const creditors = [];
+  const debtors = [];
+
+  for (const { userId, net } of netBalances) {
+    if (net > 0.005) creditors.push({ userId, amount: net });
+    else if (net < -0.005) debtors.push({ userId, amount: -net });
+  }
+
+  creditors.sort((a, b) => b.amount - a.amount);
+  debtors.sort((a, b) => b.amount - a.amount);
+
+  const debts = [];
+  let i = 0;
+  let j = 0;
+
+  while (i < creditors.length && j < debtors.length) {
+    const creditor = creditors[i];
+    const debtor = debtors[j];
+    const amount = Math.min(creditor.amount, debtor.amount);
+
+    if (amount >= 0.01) {
+      debts.push({
+        from: debtor.userId,
+        to: creditor.userId,
+        amount: Number(amount.toFixed(2)),
+      });
+    }
+
+    creditor.amount -= amount;
+    debtor.amount -= amount;
+
+    if (creditor.amount < 0.01) i += 1;
+    if (debtor.amount < 0.01) j += 1;
+  }
+
+  return debts;
+}
+
+/**
+ * Find the simplified debt between two users, if any.
+ * @param {BalanceResult} balances
+ * @param {string} userA
+ * @param {string} userB
+ * @returns {PairwiseDebt|null}
+ */
+export function findDebtBetweenUsers(balances, userA, userB) {
+  return (
+    balances.debts.find((debt) => debt.from === userA && debt.to === userB) ??
+    balances.debts.find((debt) => debt.from === userB && debt.to === userA) ??
+    null
+  );
 }

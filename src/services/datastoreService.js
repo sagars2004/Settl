@@ -37,12 +37,23 @@ function hydrateExpense(item) {
       splits = [];
     }
   }
+  splits = splits.map((split) => ({
+    ...split,
+    settled: Boolean(split.settled),
+  }));
   return {
     ...item,
     splits,
     settled: Boolean(item.settled),
     splitwise_expense_id: item.splitwise_expense_id || null,
   };
+}
+
+/** @param {object} expense */
+function isExpenseFullySettled(expense) {
+  return (expense.splits ?? []).every(
+    (split) => split.user_id === expense.paid_by || split.settled,
+  );
 }
 
 // --- Groups (settl_groups) --------------------------------------------------
@@ -186,28 +197,40 @@ export async function getGroupExpenses(groupId) {
 }
 
 /**
- * Mark all outstanding expenses involving a counterparty as settled.
+ * Mark a debtor's outstanding shares to a creditor as settled.
+ * Only the debtor's splits on expenses the creditor paid are affected.
  * @param {string} groupId
- * @param {string} counterpartyId
+ * @param {string} debtorId
+ * @param {string} creditorId
  */
-export async function markBalanceSettled(groupId, counterpartyId) {
+export async function markBalanceSettled(groupId, debtorId, creditorId) {
   const expenses = await getGroupExpenses(groupId);
-  const toSettle = expenses.filter(
-    (exp) =>
-      !exp.settled &&
-      (exp.paid_by === counterpartyId ||
-        exp.splits.some((s) => s.user_id === counterpartyId)),
-  );
+  let settledSplitCount = 0;
 
-  for (const expense of toSettle) {
-    await putItem(DATASTORES.EXPENSES, {
-      ...expense,
-      splits_json: JSON.stringify(expense.splits),
-      settled: true,
+  for (const expense of expenses) {
+    if (expense.settled || expense.paid_by !== creditorId) continue;
+
+    let changed = false;
+    const splits = expense.splits.map((split) => {
+      if (split.user_id === debtorId && !split.settled) {
+        changed = true;
+        settledSplitCount += 1;
+        return { ...split, settled: true };
+      }
+      return split;
     });
+
+    if (changed) {
+      const updated = { ...expense, splits };
+      await putItem(DATASTORES.EXPENSES, {
+        ...updated,
+        splits_json: JSON.stringify(splits),
+        settled: isExpenseFullySettled(updated),
+      });
+    }
   }
 
-  return { groupId, counterpartyId, settledCount: toSettle.length };
+  return { groupId, debtorId, creditorId, settledSplitCount };
 }
 
 // --- User tokens (settl_user_tokens) ----------------------------------------

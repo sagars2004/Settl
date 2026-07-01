@@ -28,12 +28,15 @@ export function registerActionListeners(app) {
     await ack();
     try {
       // `action.value` carries the encoded { groupId, counterpartyId } payload.
-      const { groupId, counterpartyId } = JSON.parse(action.value ?? '{}');
-      await markBalanceSettled(groupId, counterpartyId);
-      await syncSettlementToSplitwise(groupId, counterpartyId).catch((e) =>
+      const { groupId, debtorId, creditorId } = JSON.parse(action.value ?? '{}');
+      const result = await markBalanceSettled(groupId, debtorId, creditorId);
+      await syncSettlementToSplitwise(groupId, debtorId).catch((e) =>
         logger.warn('[actions] Splitwise settlement sync skipped:', e.message),
       );
-      await respond({ replace_original: true, text: '✅ Balance cleared. Tab updated.' });
+      await respond({
+        replace_original: true,
+        text: `✅ Settled ${result.settledSplitCount} share${result.settledSplitCount === 1 ? '' : 's'} with <@${debtorId}>. Run \`/settl summary\` to see the updated tab.`,
+      });
     } catch (error) {
       logger.error('[actions] mark_settled failed:', error);
       await respond({ replace_original: false, text: "Couldn't settle that balance." });
@@ -45,6 +48,12 @@ export function registerActionListeners(app) {
     await ack();
     try {
       const { username, amount, note } = JSON.parse(action.value ?? '{}');
+      if (!username) {
+        return respond({
+          replace_original: false,
+          text: "Couldn't build a Venmo link — no Venmo username on file. Pay manually or update your Slack username to match Venmo.",
+        });
+      }
       const link = buildVenmoLink({ username, amount, note });
       await respond({ replace_original: false, text: `Tap to pay on Venmo: ${link}` });
     } catch (error) {

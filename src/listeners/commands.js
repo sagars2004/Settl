@@ -13,7 +13,7 @@ import {
   listGroupMembers,
   resetGroupByChannel,
 } from '../services/datastoreService.js';
-import { calculateBalances } from '../utils/balanceCalculator.js';
+import { calculateBalances, findDebtBetweenUsers } from '../utils/balanceCalculator.js';
 import {
   buildSummaryMessage,
   buildSettleMessage,
@@ -21,7 +21,7 @@ import {
   buildGroupCreatedMessage,
   buildHelpMessage,
 } from '../utils/formatter.js';
-import { parseCreateGroupArgs } from '../utils/groupParser.js';
+import { parseCreateGroupArgs, parseSettleTarget } from '../utils/groupParser.js';
 import { resolveUserHandles } from '../utils/userResolver.js';
 import { startSplitwiseOAuth } from '../services/splitwiseMCP.js';
 import { logExpense } from '../services/expensePipeline.js';
@@ -48,7 +48,7 @@ export function registerCommandListeners(app) {
         case 'summary':
           return handleSummary({ command, respond });
         case 'settle':
-          return handleSettle({ command, args, respond });
+          return handleSettle({ command, args, respond, client });
         case 'create':
           return handleCreate({ command, args, respond, client });
         case 'members':
@@ -94,18 +94,75 @@ async function handleAdd({ command, args, respond, client, logger }) {
 /** `/settl summary` — per-channel / per-group balance breakdown. */
 async function handleSummary({ command, respond }) {
   const group = await getGroupByChannel(command.channel_id);
-  const expenses = await getGroupExpenses(group?.group_id);
+  if (!group) {
+    return respond({
+      text: 'No group in this channel. Run `/settl create [name] @members` first.',
+    });
+  }
+
+  const expenses = await getGroupExpenses(group.group_id);
   const balances = calculateBalances(group, expenses);
-  await respond({ blocks: buildSummaryMessage(group, balances), text: 'Current tab' });
+  await respond({
+    blocks: buildSummaryMessage(group, balances, { expenseCount: expenses.length }),
+    text: 'Current tab',
+  });
 }
 
 /** `/settl settle @user` — surface a resolvable balance with action buttons. */
-async function handleSettle({ command, args, respond }) {
+async function handleSettle({ command, args, respond, client }) {
   const group = await getGroupByChannel(command.channel_id);
-  const expenses = await getGroupExpenses(group?.group_id);
+  if (!group) {
+    return respond({
+      text: 'No group in this channel. Run `/settl create [name] @members` first.',
+    });
+  }
+
+  const { slackUserId, bareHandle } = parseSettleTarget(args);
+  if (!slackUserId && !bareHandle) {
+    return respond({ text: 'Usage: `/settl settle @user` — pick someone from the group.' });
+  }
+
+  let counterpartyId = slackUserId;
+  if (!counterpartyId && bareHandle) {
+    const { resolved, unresolved } = await resolveUserHandles(client, [bareHandle]);
+    if (unresolved.length) {
+      return respond({
+        text: `Couldn't find @${bareHandle}. Use Slack's @ menu to pick a user.`,
+      });
+    }
+    counterpartyId = resolved[0];
+  }
+
+  if (counterpartyId === command.user_id) {
+    return respond({ text: "You can't settle with yourself." });
+  }
+
+  if (!group.members.includes(counterpartyId)) {
+    return respond({
+      text: `<@${counterpartyId}> isn't in *${group.name}*. Run \`/settl members\` to see the roster.`,
+    });
+  }
+
+  const expenses = await getGroupExpenses(group.group_id);
   const balances = calculateBalances(group, expenses);
-  // TODO: resolve `args` (@mention) to a user id and filter the balance.
-  await respond({ blocks: buildSettleMessage(args, balances), text: 'Settle up' });
+  const debt = findDebtBetweenUsers(balances, command.user_id, counterpartyId);
+
+  let venmoRecipient;
+  if (debt && debt.to === command.user_id) {
+    const userInfo = await client.users.info({ user: command.user_id });
+    venmoRecipient = userInfo.user?.name ?? null;
+  }
+
+  await respond({
+    blocks: buildSettleMessage({
+      group,
+      requesterId: command.user_id,
+      counterpartyId,
+      debt,
+      venmoRecipient,
+    }),
+    text: debt ? 'Settle up' : 'All square',
+  });
 }
 
 /** `/settl create [name] @a @b` — initialize a group bound to this channel. */

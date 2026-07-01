@@ -86,27 +86,90 @@ export function buildExpenseConfirmation(expense, balances, group) {
  * Full balance summary for `/settl summary`.
  * @param {object|null} group
  * @param {import('./balanceCalculator.js').BalanceResult} balances
+ * @param {{ expenseCount?: number }} [options]
  * @returns {object[]}
  */
-export function buildSummaryMessage(group, balances) {
-  return [
+export function buildSummaryMessage(group, balances, options = {}) {
+  const currency = group?.base_currency ?? 'USD';
+  const blocks = [
     { type: 'header', text: { type: 'plain_text', text: `Tab — ${group?.name ?? 'This channel'}` } },
-    // TODO: list each debt as "A owes B $X" from balances.debts.
-    { type: 'section', text: { type: 'mrkdwn', text: 'No outstanding balances yet.' } },
   ];
+
+  const debts = balances.debts ?? [];
+  if (debts.length) {
+    const debtLines = debts
+      .map(
+        (debt) =>
+          `• <@${debt.from}> owes <@${debt.to}> *${formatMoney(currency, debt.amount)}*`,
+      )
+      .join('\n');
+
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: debtLines },
+    });
+  } else {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: ':white_check_mark: No outstanding balances — everyone is square.' },
+    });
+  }
+
+  const contextParts = [];
+  if (options.expenseCount != null) {
+    const count = options.expenseCount;
+    contextParts.push(`${count} expense${count === 1 ? '' : 's'} logged`);
+  }
+  contextParts.push(`Base currency ${currency}`);
+  if (debts.length) {
+    contextParts.push('Use `/settl settle @user` to clear a balance');
+  }
+
+  blocks.push({
+    type: 'context',
+    elements: [{ type: 'mrkdwn', text: contextParts.join(' · ') }],
+  });
+
+  return blocks;
 }
 
 /**
  * Settle-up prompt for `/settl settle @user`, with action buttons.
- * @param {string} counterparty  raw @mention / user token
- * @param {import('./balanceCalculator.js').BalanceResult} balances
+ * @param {object} params
+ * @param {object} params.group
+ * @param {string} params.requesterId
+ * @param {string} params.counterpartyId
+ * @param {import('./balanceCalculator.js').PairwiseDebt|null} params.debt
+ * @param {string} [params.venmoRecipient]  Venmo username of whoever receives payment
  * @returns {object[]}
  */
-export function buildSettleMessage(counterparty, balances) {
+export function buildSettleMessage({ group, requesterId, counterpartyId, debt, venmoRecipient }) {
+  const currency = group?.base_currency ?? 'USD';
+
+  if (!debt) {
+    return [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `You're all square with <@${counterpartyId}>. :handshake:`,
+        },
+      },
+    ];
+  }
+
+  const counterpartyOwesRequester =
+    debt.from === counterpartyId && debt.to === requesterId;
+  const summaryText = counterpartyOwesRequester
+    ? `<@${counterpartyId}> owes you *${formatMoney(currency, debt.amount)}*.`
+    : `You owe <@${counterpartyId}> *${formatMoney(currency, debt.amount)}*.`;
+
+  const venmoPayee = counterpartyOwesRequester ? venmoRecipient : null;
+
   return [
     {
       type: 'section',
-      text: { type: 'mrkdwn', text: `Settling up with ${counterparty || 'user'}.` },
+      text: { type: 'mrkdwn', text: summaryText },
     },
     {
       type: 'actions',
@@ -116,14 +179,21 @@ export function buildSettleMessage(counterparty, balances) {
           text: { type: 'plain_text', text: 'Mark as Settled' },
           style: 'primary',
           action_id: ACTION_IDS.MARK_SETTLED,
-          // TODO: encode { groupId, counterpartyId } once resolved.
-          value: JSON.stringify({ groupId: null, counterpartyId: null }),
+          value: JSON.stringify({
+            groupId: group.group_id,
+            debtorId: debt.from,
+            creditorId: debt.to,
+          }),
         },
         {
           type: 'button',
           text: { type: 'plain_text', text: 'Send Venmo Request' },
           action_id: ACTION_IDS.SEND_VENMO,
-          value: JSON.stringify({ username: null, amount: null, note: 'Settl' }),
+          value: JSON.stringify({
+            username: venmoPayee ?? null,
+            amount: debt.amount,
+            note: 'Settl',
+          }),
         },
         {
           type: 'button',

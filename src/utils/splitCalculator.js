@@ -12,6 +12,7 @@ export function computeSplits({ amount, splitType, participants, customSplits })
     return customSplits.map((split) => ({
       user_id: split.user_id ?? split.userId,
       amount: Number(split.amount.toFixed(2)),
+      settled: Boolean(split.settled),
     }));
   }
 
@@ -25,5 +26,6 @@ export function computeSplits({ amount, splitType, participants, customSplits })
   return ids.map((userId, index) => ({
     user_id: userId,
     amount: (baseCents + (index < remainder ? 1 : 0)) / 100,
+    settled: false,
   }));
 }

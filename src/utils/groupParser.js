@@ -43,3 +43,25 @@ export function parseCreateGroupArgs(args, creatorId) {
 
   return { name, members: [...members], bareHandles };
 }
+
+/**
+ * Parse `/settl settle @user` into a Slack user id or bare handle.
+ * @param {string} args  Text after "settle" in the slash command.
+ * @returns {{ slackUserId: string|null, bareHandle: string|null }}
+ */
+export function parseSettleTarget(args) {
+  const trimmed = args.trim();
+  if (!trimmed) return { slackUserId: null, bareHandle: null };
+
+  const encoded = trimmed.match(/<@(U[A-Z0-9]+)(?:\|[^>]+)?>/);
+  if (encoded) return { slackUserId: encoded[1], bareHandle: null };
+
+  const bare = trimmed.match(/@([\w.-]+)/);
+  if (bare) return { slackUserId: null, bareHandle: bare[1] };
+
+  if (/^[\w.-]+$/.test(trimmed)) {
+    return { slackUserId: null, bareHandle: trimmed };
+  }
+
+  return { slackUserId: null, bareHandle: null };
+}
