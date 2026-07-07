@@ -19,11 +19,12 @@ import {
   buildSettleMessage,
   buildMembersMessage,
   buildGroupCreatedMessage,
+  buildConnectMessage,
   buildHelpMessage,
 } from '../utils/formatter.js';
 import { parseCreateGroupArgs, parseSettleTarget } from '../utils/groupParser.js';
 import { resolveUserHandles } from '../utils/userResolver.js';
-import { startSplitwiseOAuth } from '../services/splitwiseMCP.js';
+import { startSplitwiseOAuth, completeSplitwiseOAuth, isSplitwiseLinked } from '../services/splitwiseMCP.js';
 import { logExpense } from '../services/expensePipeline.js';
 import { setReminderCadence } from '../agents/nudgeAgent.js';
 
@@ -44,23 +45,31 @@ export function registerCommandListeners(app) {
     try {
       switch (subcommand) {
         case 'add':
-          return handleAdd({ command, args, respond, client, logger });
+          await handleAdd({ command, args, respond, client, logger });
+          break;
         case 'summary':
-          return handleSummary({ command, respond });
+          await handleSummary({ command, respond });
+          break;
         case 'settle':
-          return handleSettle({ command, args, respond, client });
+          await handleSettle({ command, args, respond, client });
+          break;
         case 'create':
-          return handleCreate({ command, args, respond, client });
+          await handleCreate({ command, args, respond, client });
+          break;
         case 'members':
-          return handleMembers({ command, respond });
+          await handleMembers({ command, respond });
+          break;
         case 'connect':
-          return handleConnect({ command, args, respond });
+          await handleConnect({ command, args, respond });
+          break;
         case 'remind':
-          return handleRemind({ command, args, respond });
+          await handleRemind({ command, args, respond });
+          break;
         case 'reset':
-          return handleReset({ command, respond });
+          await handleReset({ command, respond });
+          break;
         default:
-          return respond({ blocks: buildHelpMessage(), text: 'Settl help' });
+          await respond({ blocks: buildHelpMessage(), text: 'Settl help' });
       }
     } catch (error) {
       logger.error(`[commands] /settl ${subcommand} failed:`, error);
@@ -224,15 +233,45 @@ async function handleReset({ command, respond }) {
 
 /** `/settl connect splitwise` — kick off the Splitwise OAuth flow. */
 async function handleConnect({ command, args, respond }) {
-  if (args.toLowerCase() !== 'splitwise') {
-    return respond({ text: 'Usage: `/settl connect splitwise`' });
+  const parts = args.trim().split(/\s+/);
+  const provider = parts[0]?.toLowerCase();
+  const code = parts[1];
+
+  if (provider !== 'splitwise') {
+    return respond({ text: 'Usage: `/settl connect splitwise` or `/settl connect splitwise <code>`' });
   }
+
+  if (code) {
+    try {
+      const result = await completeSplitwiseOAuth(command.user_id, code);
+      return respond({
+        text: `:link: Splitwise linked for *${result.firstName}* (id ${result.splitwiseUserId}). Expenses you log will sync to Splitwise.`,
+      });
+    } catch (error) {
+      return respond({ text: `Couldn't link Splitwise: ${error.message}` });
+    }
+  }
+
+  if (await isSplitwiseLinked(command.user_id)) {
+    return respond({
+      blocks: buildConnectMessage(null, true),
+      text: 'Splitwise is already linked.',
+    });
+  }
+
   const authUrl = await startSplitwiseOAuth(command.user_id);
-  await respond({ text: `Link your Splitwise account: ${authUrl ?? '<oauth-url>'}` });
+  await respond({
+    blocks: buildConnectMessage(authUrl),
+    text: authUrl ? 'Link your Splitwise account' : 'Splitwise is not configured.',
+  });
 }
 
 /** `/settl remind [frequency]` — configure the proactive nudge cadence. */
 async function handleRemind({ command, args, respond }) {
-  await setReminderCadence(command.channel_id, args);
-  await respond({ text: `Reminder cadence set to: ${args || 'default'}` });
+  const cadence = await setReminderCadence(command.channel_id, args);
+  if (cadence === null) {
+    return respond({ text: 'Nudges turned off for this channel.' });
+  }
+  const label = args?.trim() || 'daily';
+  await respond({ text: `Reminder cadence set to *${label}* for this channel.` });
 }

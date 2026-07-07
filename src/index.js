@@ -12,8 +12,10 @@ import pkg from '@slack/bolt';
 import { registerMentionListeners } from './listeners/mentions.js';
 import { registerCommandListeners } from './listeners/commands.js';
 import { registerActionListeners } from './listeners/actions.js';
+import { registerAssistant } from './listeners/assistant.js';
 import { startNudgeAgent } from './agents/nudgeAgent.js';
 import { bindDatastoreClient } from './services/datastoreClient.js';
+import { registerOAuthRoutes } from './routes/oauth.js';
 
 const { App, LogLevel } = pkg;
 
@@ -48,6 +50,11 @@ const app = new App({
 registerMentionListeners(app); // @Settl natural-language expense logging
 registerCommandListeners(app); // /settl slash command subcommands
 registerActionListeners(app); // Block Kit button interactions
+registerAssistant(app); // Slack Assistant (AI split-view surface)
+
+if (!socketMode) {
+  registerOAuthRoutes(app);
+}
 
 // Wire the Slack WebClient into the datastore layer.
 bindDatastoreClient(app.client);

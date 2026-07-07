@@ -1,16 +1,18 @@
 // ---------------------------------------------------------------------------
-// Mention listeners — the primary, zero-friction expense input surface.
+// Mention listeners — @Settl expense logging in channels.
 // ---------------------------------------------------------------------------
-// Handles `app_mention` events (e.g. "@Settl grabbed dinner, $94, split 4 ways")
-// and 1:1 DM messages. The raw text is handed to the Slack AI parser, converted
-// to a structured expense, persisted, optionally synced to Splitwise, and
-// confirmed back to the user in-thread with a Block Kit summary.
+// Handles `app_mention` events (e.g. "@Settl grabbed dinner, $94, split 4 ways").
+// The raw text is parsed (Slack AI + regex fallback), converted to a structured
+// expense, persisted, optionally synced to Splitwise, and confirmed in-thread
+// with a Block Kit summary. Direct messages are handled by the Assistant
+// (see listeners/assistant.js) so they aren't double-processed here.
 // ---------------------------------------------------------------------------
 
 import { logExpense } from '../services/expensePipeline.js';
+import { buildErrorMessage } from '../utils/formatter.js';
 
 /**
- * Attach mention/DM handlers to the Bolt app.
+ * Attach the channel @mention handler to the Bolt app.
  * @param {import('@slack/bolt').App} app
  */
 export function registerMentionListeners(app) {
@@ -24,6 +26,8 @@ export function registerMentionListeners(app) {
         client,
         botUserId: context.botUserId,
         threadTs: event.ts,
+        assistantChannelId: event.channel,
+        assistantThreadTs: event.thread_ts ?? event.ts,
         reply: (payload) => say(payload),
         logger,
       });
@@ -31,29 +35,12 @@ export function registerMentionListeners(app) {
       logger.error('[mentions] app_mention handler failed:', error);
       await say({
         thread_ts: event.ts,
-        text: "Sorry — I couldn't log that expense. Mind rephrasing it?",
+        blocks: buildErrorMessage(
+          "Couldn't log that",
+          "Mind rephrasing? Try `@Settl split $84 dinner 3 ways`.",
+        ),
+        text: "Sorry — I couldn't log that expense.",
       });
-    }
-  });
-
-  // Fired for direct messages to the bot (im). Enables private, 1:1 logging.
-  app.message(async ({ message, client, say, context, logger }) => {
-    // Ignore bot echoes, edits, and non-standard message subtypes.
-    if (message.subtype || message.bot_id) return;
-    try {
-      await logExpense({
-        text: message.text ?? '',
-        channelId: message.channel,
-        userId: message.user,
-        client,
-        botUserId: context.botUserId,
-        threadTs: message.ts,
-        reply: (payload) => say(payload),
-        logger,
-      });
-    } catch (error) {
-      logger.error('[mentions] DM handler failed:', error);
-      await say({ text: "Sorry — I couldn't log that expense. Mind rephrasing it?" });
     }
   });
 }

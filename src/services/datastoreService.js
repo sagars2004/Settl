@@ -182,6 +182,25 @@ export async function createExpense(parsed) {
 }
 
 /**
+ * Patch fields on an existing expense record.
+ * @param {string} expenseId
+ * @param {object} patch
+ * @returns {Promise<object|null>}
+ */
+export async function updateExpense(expenseId, patch) {
+  const item = await getItem(DATASTORES.EXPENSES, expenseId);
+  if (!item) return null;
+
+  const record = { ...item, ...patch };
+  if (patch.splits) {
+    record.splits_json = JSON.stringify(patch.splits);
+  }
+
+  await putItem(DATASTORES.EXPENSES, record);
+  return hydrateExpense(record);
+}
+
+/**
  * Fetch all expenses for a group.
  * @param {string} groupId
  * @returns {Promise<object[]>}

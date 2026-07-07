@@ -6,14 +6,14 @@
 // shared ACTION_IDS from listeners/actions.js so clicks route correctly.
 // ---------------------------------------------------------------------------
 
-import { ACTION_IDS } from '../listeners/actions.js';
+import { ACTION_IDS, VIEW_IDS } from '../listeners/actions.js';
 
 /**
  * Format a currency amount for display.
  * @param {string} currency
  * @param {number} amount
  */
-function formatMoney(currency, amount) {
+export function formatMoney(currency, amount) {
   const symbolMap = { USD: '$', EUR: '€', GBP: '£', JPY: '¥' };
   const symbol = symbolMap[currency] ?? `${currency} `;
   const formatted = Number(amount).toFixed(2).replace(/\.00$/, '');
@@ -21,63 +21,98 @@ function formatMoney(currency, amount) {
 }
 
 /**
+ * Build a short context badge line describing how the expense was processed.
+ * @param {{ parsedVia?: 'ai'|'regex', splitwise?: object }} meta
+ * @returns {string}
+ */
+function buildBadges(meta = {}) {
+  const badges = [];
+  if (meta.parsedVia === 'ai') badges.push(':sparkles: Parsed by Slack AI');
+  if (meta.splitwise?.synced) {
+    const via = meta.splitwise.via === 'mcp' ? 'Splitwise MCP' : 'Splitwise';
+    badges.push(`:white_check_mark: Synced to ${via}`);
+  } else if (meta.splitwise?.reason === 'error') {
+    badges.push(':warning: Splitwise sync skipped');
+  }
+  return badges.join('  ·  ');
+}
+
+/**
  * Confirmation shown after an expense is logged (posted in-thread).
  * @param {object} expense   persisted settl_expenses record
  * @param {import('./balanceCalculator.js').BalanceResult} balances
  * @param {object} [group]   settl_groups record
+ * @param {{ conversion?: object, parsedVia?: 'ai'|'regex', splitwise?: object }} [meta]
  * @returns {object[]} Block Kit blocks
  */
-export function buildExpenseConfirmation(expense, balances, group) {
-  const payerLine = `• <@${expense.paid_by}> paid *${formatMoney(expense.currency, expense.total_amount)}*`;
+export function buildExpenseConfirmation(expense, balances, group, meta = {}) {
+  const { conversion } = meta;
+  const currency = expense.currency;
+
+  const payerLine = `• <@${expense.paid_by}> paid *${formatMoney(currency, expense.total_amount)}*`;
   const shareLines = (expense.splits ?? [])
     .filter((split) => split.user_id !== expense.paid_by)
-    .map((split) => `• <@${split.user_id}> owes *${formatMoney(expense.currency, split.amount)}*`);
+    .map((split) => `• <@${split.user_id}> owes *${formatMoney(currency, split.amount)}*`);
 
   const payerShare = (expense.splits ?? []).find((split) => split.user_id === expense.paid_by);
   const payerOwesLine =
     payerShare && payerShare.amount > 0
-      ? `• <@${expense.paid_by}> owes *${formatMoney(expense.currency, payerShare.amount)}* (their share)`
+      ? `• <@${expense.paid_by}> owes *${formatMoney(currency, payerShare.amount)}* _(their share)_`
       : null;
 
   const splitText = [payerLine, ...shareLines, payerOwesLine].filter(Boolean).join('\n');
 
+  const converted =
+    conversion?.originalCurrency &&
+    conversion.originalCurrency !== currency &&
+    conversion.originalAmount != null;
+
+  const headline = converted
+    ? `:receipt: Logged *${formatMoney(currency, expense.total_amount)}* — _${expense.description}_\n_Converted from ${formatMoney(conversion.originalCurrency, conversion.originalAmount)} · rate ${conversion.fxRate}_`
+    : `:receipt: Logged *${formatMoney(currency, expense.total_amount)}* — _${expense.description}_`;
+
   const blocks = [
-    {
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: `:white_check_mark: Logged *${formatMoney(expense.currency, expense.total_amount)}* — _${expense.description}_`,
-      },
-    },
-    {
-      type: 'section',
-      text: { type: 'mrkdwn', text: `*This expense*\n${splitText}` },
-    },
+    { type: 'section', text: { type: 'mrkdwn', text: headline } },
+    { type: 'divider' },
+    { type: 'section', text: { type: 'mrkdwn', text: `*This expense*\n${splitText}` } },
   ];
 
   const tabLines = (balances.netBalances ?? [])
     .filter((entry) => Math.abs(entry.net) >= 0.01)
-    .map((entry) => {
-      if (entry.net > 0) {
-        return `• <@${entry.userId}> is owed *${formatMoney(expense.currency, entry.net)}*`;
-      }
-      return `• <@${entry.userId}> owes *${formatMoney(expense.currency, Math.abs(entry.net))}*`;
-    });
+    .map((entry) =>
+      entry.net > 0
+        ? `• <@${entry.userId}> is owed *${formatMoney(currency, entry.net)}*`
+        : `• <@${entry.userId}> owes *${formatMoney(currency, Math.abs(entry.net))}*`,
+    );
 
   if (tabLines.length) {
-    blocks.push({
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: `*Running tab — ${group?.name ?? 'This channel'}*\n${tabLines.join('\n')}`,
+    blocks.push(
+      { type: 'divider' },
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*Running tab — ${group?.name ?? 'This channel'}*\n${tabLines.join('\n')}`,
+        },
       },
-    });
+      {
+        type: 'actions',
+        elements: [
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: 'View full tab', emoji: true },
+            action_id: ACTION_IDS.VIEW_TAB,
+            value: JSON.stringify({ groupId: group?.group_id }),
+          },
+        ],
+      },
+    );
   }
 
-  blocks.push({
-    type: 'context',
-    elements: [{ type: 'mrkdwn', text: 'Run `/settl summary` for the full tab.' }],
-  });
+  const badges = buildBadges(meta);
+  if (badges) {
+    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: badges }] });
+  }
 
   return blocks;
 }
@@ -91,27 +126,51 @@ export function buildExpenseConfirmation(expense, balances, group) {
  */
 export function buildSummaryMessage(group, balances, options = {}) {
   const currency = group?.base_currency ?? 'USD';
+  const debts = balances.debts ?? [];
   const blocks = [
-    { type: 'header', text: { type: 'plain_text', text: `Tab — ${group?.name ?? 'This channel'}` } },
+    {
+      type: 'header',
+      text: { type: 'plain_text', text: `Tab — ${group?.name ?? 'This channel'}`, emoji: true },
+    },
   ];
 
-  const debts = balances.debts ?? [];
   if (debts.length) {
-    const debtLines = debts
-      .map(
-        (debt) =>
-          `• <@${debt.from}> owes <@${debt.to}> *${formatMoney(currency, debt.amount)}*`,
-      )
-      .join('\n');
-
     blocks.push({
       type: 'section',
-      text: { type: 'mrkdwn', text: debtLines },
+      text: {
+        type: 'mrkdwn',
+        text: `:bar_chart: *${debts.length} outstanding balance${debts.length === 1 ? '' : 's'}*`,
+      },
     });
+    blocks.push({ type: 'divider' });
+
+    for (const debt of debts) {
+      blocks.push({
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `:money_with_wings: <@${debt.from}> → <@${debt.to}>\n*${formatMoney(currency, debt.amount)}*`,
+        },
+        accessory: {
+          type: 'button',
+          text: { type: 'plain_text', text: 'Settle', emoji: true },
+          style: 'primary',
+          action_id: ACTION_IDS.SUMMARY_SETTLE,
+          value: JSON.stringify({
+            groupId: group.group_id,
+            debtorId: debt.from,
+            creditorId: debt.to,
+          }),
+        },
+      });
+    }
   } else {
     blocks.push({
       type: 'section',
-      text: { type: 'mrkdwn', text: ':white_check_mark: No outstanding balances — everyone is square.' },
+      text: {
+        type: 'mrkdwn',
+        text: ':tada: *Everyone is square* — no outstanding balances.',
+      },
     });
   }
 
@@ -121,16 +180,164 @@ export function buildSummaryMessage(group, balances, options = {}) {
     contextParts.push(`${count} expense${count === 1 ? '' : 's'} logged`);
   }
   contextParts.push(`Base currency ${currency}`);
-  if (debts.length) {
-    contextParts.push('Use `/settl settle @user` to clear a balance');
-  }
 
+  blocks.push({ type: 'divider' });
   blocks.push({
     type: 'context',
-    elements: [{ type: 'mrkdwn', text: contextParts.join(' · ') }],
+    elements: [{ type: 'mrkdwn', text: contextParts.join('  ·  ') }],
   });
 
   return blocks;
+}
+
+/**
+ * Interactive review card shown before logging when no @mentions were provided.
+ * @param {object} params
+ * @param {string} params.reviewId
+ * @param {object} params.group
+ * @param {number} params.amount
+ * @param {string} params.currency
+ * @param {string} params.description
+ * @param {string} params.paidBy
+ * @param {string[]} params.selectedMembers  Slack user ids included in the split
+ * @param {object} [params.conversion]
+ * @returns {object[]}
+ */
+export function buildExpenseReviewMessage({
+  reviewId,
+  group,
+  amount,
+  currency,
+  description,
+  paidBy,
+  selectedMembers,
+  conversion,
+}) {
+  const selected = new Set(selectedMembers);
+  const count = selected.size || 1;
+  const preview = formatMoney(currency, amount / count);
+
+  const converted =
+    conversion?.originalCurrency &&
+    conversion.originalCurrency !== currency &&
+    conversion.originalAmount != null;
+
+  const headline = converted
+    ? `:memo: *Review expense* — ${formatMoney(currency, amount)} _${description}_\n_Converted from ${formatMoney(conversion.originalCurrency, conversion.originalAmount)}_`
+    : `:memo: *Review expense* — ${formatMoney(currency, amount)} _${description}_`;
+
+  const blocks = [
+    { type: 'section', text: { type: 'mrkdwn', text: headline } },
+    { type: 'divider' },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*Who's in?* Tap to include or exclude.\n_Equal split preview: *${preview}* each (${count} ${count === 1 ? 'person' : 'people'})_`,
+      },
+    },
+  ];
+
+  for (const memberId of group.members ?? []) {
+    const included = selected.has(memberId);
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: included ? `:white_check_mark: <@${memberId}>` : `:white_large_square: <@${memberId}>`,
+      },
+      accessory: {
+        type: 'button',
+        text: {
+          type: 'plain_text',
+          text: included ? 'Included' : 'Excluded',
+          emoji: true,
+        },
+        action_id: ACTION_IDS.TOGGLE_PARTICIPANT,
+        value: JSON.stringify({ reviewId, memberId }),
+      },
+    });
+  }
+
+  blocks.push(
+    { type: 'divider' },
+    {
+      type: 'actions',
+      elements: [
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: 'Split equally', emoji: true },
+          style: 'primary',
+          action_id: ACTION_IDS.CONFIRM_EQUAL_SPLIT,
+          value: JSON.stringify({ reviewId }),
+        },
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: 'Custom amounts…', emoji: true },
+          action_id: ACTION_IDS.OPEN_CUSTOM_SPLIT,
+          value: JSON.stringify({ reviewId }),
+        },
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: 'Cancel', emoji: true },
+          action_id: ACTION_IDS.CANCEL_REVIEW,
+          value: JSON.stringify({ reviewId }),
+        },
+      ],
+    },
+    {
+      type: 'context',
+      elements: [
+        {
+          type: 'mrkdwn',
+          text: `<@${paidBy}> paid · Group *${group.name}*`,
+        },
+      ],
+    },
+  );
+
+  return blocks;
+}
+
+/**
+ * Modal for per-person custom split amounts.
+ * @param {object} draft  pending review draft
+ * @returns {object}
+ */
+export function buildCustomSplitModal({ reviewId, amount, currency, selectedMembers, memberNames = {} }) {
+  const perPerson = selectedMembers.length ? amount / selectedMembers.length : amount;
+
+  const blocks = selectedMembers.map((userId) => ({
+    type: 'input',
+    block_id: `member_${userId}`,
+    label: {
+      type: 'plain_text',
+      text: memberNames[userId] ?? `Member ${userId.slice(-6)}`,
+    },
+    element: {
+      type: 'plain_text_input',
+      action_id: 'amount',
+      initial_value: perPerson.toFixed(2),
+    },
+  }));
+
+  blocks.push({
+    type: 'section',
+    text: {
+      type: 'mrkdwn',
+      text: `Total should equal *${formatMoney(currency, amount)}*. Adjust any share, then submit.`,
+    },
+  });
+
+  return {
+    type: 'modal',
+    callback_id: VIEW_IDS.CUSTOM_SPLIT,
+    private_metadata: JSON.stringify({ reviewId }),
+    title: { type: 'plain_text', text: 'Custom split' },
+    submit: { type: 'plain_text', text: 'Log expense' },
+    close: { type: 'plain_text', text: 'Back' },
+    blocks,
+  };
 }
 
 /**
@@ -168,9 +375,14 @@ export function buildSettleMessage({ group, requesterId, counterpartyId, debt, v
 
   return [
     {
+      type: 'header',
+      text: { type: 'plain_text', text: 'Settle up', emoji: true },
+    },
+    {
       type: 'section',
       text: { type: 'mrkdwn', text: summaryText },
     },
+    { type: 'divider' },
     {
       type: 'actions',
       elements: [
@@ -307,6 +519,103 @@ export function buildNudgeMessage(totalOutstanding) {
         type: 'mrkdwn',
         text: `:wave: Hey team — you've got *${totalOutstanding}* in unresolved expenses. Run \`/settl summary\` to review.`,
       },
+    },
+  ];
+}
+
+/**
+ * A consistent error card so failures never appear as bare strings.
+ * @param {string} title
+ * @param {string} message  mrkdwn body
+ * @returns {object[]}
+ */
+export function buildErrorMessage(title, message) {
+  return [
+    { type: 'section', text: { type: 'mrkdwn', text: `:warning: *${title}*` } },
+    { type: 'section', text: { type: 'mrkdwn', text: message } },
+  ];
+}
+
+/**
+ * Welcome shown when a user opens the Settl Assistant container.
+ * @param {object|null} group  group bound to the context channel, if any
+ * @returns {object[]}
+ */
+export function buildAssistantWelcome(group) {
+  const blocks = [
+    { type: 'section', text: { type: 'mrkdwn', text: ':wave: *Hi, I\'m Settl.* I turn plain-English messages into a shared tab.' } },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: [
+          'Try things like:',
+          '• _"Split $84 dinner 3 ways"_',
+          '• _"I paid forty bucks for groceries"_',
+          '• _"What\'s the tab?"_',
+        ].join('\n'),
+      },
+    },
+  ];
+
+  blocks.push({
+    type: 'context',
+    elements: [
+      {
+        type: 'mrkdwn',
+        text: group
+          ? `Tracking *${group.name}* · ${group.members?.length ?? 0} members`
+          : 'No group here yet — run `/settl create [name] @members` in the channel first.',
+      },
+    ],
+  });
+
+  return blocks;
+}
+
+/**
+ * Splitwise connect card with a link button (native, not a raw URL wall).
+ * @param {string|null} authUrl
+ * @param {boolean} [alreadyLinked]
+ * @returns {object[]}
+ */
+export function buildConnectMessage(authUrl, alreadyLinked = false) {
+  if (alreadyLinked) {
+    return [
+      {
+        type: 'section',
+        text: { type: 'mrkdwn', text: ':link: *Splitwise is already linked.* Expenses you pay will sync automatically.' },
+      },
+    ];
+  }
+
+  if (!authUrl) {
+    return buildErrorMessage(
+      'Splitwise not configured',
+      'Set `SPLITWISE_CONSUMER_KEY` and `SPLITWISE_CONSUMER_SECRET` in `.env`, then try again.',
+    );
+  }
+
+  return [
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: ':link: *Link your Splitwise account* to sync expenses you pay.' },
+      accessory: {
+        type: 'button',
+        text: { type: 'plain_text', text: 'Authorize Splitwise', emoji: true },
+        style: 'primary',
+        url: authUrl,
+        action_id: ACTION_IDS.OPEN_SPLITWISE,
+      },
+    },
+    {
+      type: 'context',
+      elements: [
+        {
+          type: 'mrkdwn',
+          text: 'After authorizing, copy the `code` from the redirect URL and run `/settl connect splitwise <code>`.',
+        },
+      ],
     },
   ];
 }

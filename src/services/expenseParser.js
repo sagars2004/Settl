@@ -3,14 +3,18 @@
 // ---------------------------------------------------------------------------
 // Turns free-form text ("split the $84 dinner equally among the 4 of us") into
 // a structured expense object the rest of the app can persist and sync.
-// Backed by Slack AI capabilities; falls back to a lightweight regex heuristic
-// so the pipeline stays testable before the AI layer is fully wired.
+// Slack-encoded @mentions are extracted with regex (they are precise), while
+// the amount / description / currency / intent are extracted by an LLM when a
+// provider is configured, with a regex heuristic fallback so the pipeline works
+// with zero configuration.
 // ---------------------------------------------------------------------------
 
 import { SLACK_MENTION_PATTERN, BARE_MENTION_PATTERN } from '../utils/groupParser.js';
+import { aiParseExpense } from './aiParser.js';
 
 /**
  * @typedef {Object} ParsedExpense
+ * @property {'log_expense'|'summary'|'settle'|'help'} intent  Detected intent.
  * @property {string} description   Human-readable label (e.g. "Team dinner").
  * @property {number|null} amount   Total amount in the detected currency.
  * @property {string} currency      ISO 4217 code (e.g. "USD", "EUR").
@@ -20,6 +24,7 @@ import { SLACK_MENTION_PATTERN, BARE_MENTION_PATTERN } from '../utils/groupParse
  * @property {string[]} bareHandles Plain @handles to resolve via users.list.
  * @property {number|null} waysCount Parsed "N ways" count, if present.
  * @property {'equal'|'custom'} splitType How the total is divided.
+ * @property {'ai'|'regex'} parsedVia Which layer produced the fields.
  * @property {Array<{userId: string, amount: number}>} [customSplits] Per-user amounts.
  */
 
@@ -31,14 +36,14 @@ import { SLACK_MENTION_PATTERN, BARE_MENTION_PATTERN } from '../utils/groupParse
  * @returns {Promise<ParsedExpense>}
  */
 export async function parseExpense(text, context) {
-  // TODO: Call the Slack AI layer with a structured-output prompt/schema.
-  let cleaned = text.trim();
+  let cleaned = (text ?? '').trim();
   if (context.botUserId) {
     cleaned = cleaned
       .replace(new RegExp(`<@${context.botUserId}(?:\\|[^>]+)?>`, 'gi'), ' ')
       .trim();
   }
 
+  // Slack-encoded @mentions are precise — always extract with regex.
   const slackMentions = [];
   for (const match of cleaned.matchAll(SLACK_MENTION_PATTERN)) {
     if (match[1] !== context.botUserId) {
@@ -52,15 +57,26 @@ export async function parseExpense(text, context) {
   for (const match of remainder.matchAll(BARE_MENTION_PATTERN)) {
     bareHandles.push(match[1]);
   }
-  remainder = remainder.replace(BARE_MENTION_PATTERN, ' ');
+  remainder = remainder.replace(BARE_MENTION_PATTERN, ' ').trim();
 
-  const waysMatch = remainder.match(/(\d+)\s*ways?/i);
-  const waysCount = waysMatch ? Number.parseInt(waysMatch[1], 10) : null;
+  // Try the AI layer first for amount/description/currency/waysCount/intent.
+  const ai = await aiParseExpense(remainder);
 
-  const { amount, currency, matchedText } = extractAmount(remainder);
-  const description = extractDescription(remainder, matchedText);
+  // Regex heuristics (used as fallback and to fill any gaps the AI left null).
+  const regexWays = matchWaysCount(remainder);
+  const { amount: regexAmount, currency: regexCurrency, matchedText } = extractAmount(remainder);
+  const regexDescription = extractDescription(remainder, matchedText);
+
+  const parsedVia = ai ? 'ai' : 'regex';
+  const intent = ai?.intent ?? inferIntent(remainder);
+
+  const amount = ai?.amount ?? regexAmount;
+  const currency = (ai?.currency ?? regexCurrency) || process.env.DEFAULT_BASE_CURRENCY || 'USD';
+  const description = ai?.description || regexDescription;
+  const waysCount = ai?.waysCount ?? regexWays;
 
   return {
+    intent,
     description,
     amount,
     currency,
@@ -70,11 +86,36 @@ export async function parseExpense(text, context) {
     bareHandles,
     waysCount,
     splitType: 'equal',
+    parsedVia,
   };
 }
 
 /**
- * Very small amount/currency extractor used until Slack AI is connected.
+ * Lightweight regex intent classifier (fallback when AI is unavailable).
+ * @param {string} text
+ * @returns {'log_expense'|'summary'|'settle'|'help'}
+ */
+function inferIntent(text) {
+  const lower = text.toLowerCase();
+  if (/\b(settle|pay(ing)? (up|back)|square up|mark.*paid)\b/.test(lower)) return 'settle';
+  if (/\b(summary|tab|balance|who owes|what do i owe|how much)\b/.test(lower)) return 'summary';
+  if (/\d/.test(lower) || /\b(split|paid|spent|cost|bought|covered|expense)\b/.test(lower)) {
+    return 'log_expense';
+  }
+  return 'help';
+}
+
+/**
+ * @param {string} text
+ * @returns {number|null}
+ */
+function matchWaysCount(text) {
+  const waysMatch = text.match(/(\d+)\s*(?:ways?|people|persons?)/i);
+  return waysMatch ? Number.parseInt(waysMatch[1], 10) : null;
+}
+
+/**
+ * Very small amount/currency extractor used when the AI layer is unavailable.
  * Recognizes "$94", "94 USD", "€120", etc.
  * @param {string} text
  * @returns {{ amount: number|null, currency: string, matchedText: string|null }}
@@ -84,14 +125,11 @@ function extractAmount(text) {
   const fallbackCurrency = process.env.DEFAULT_BASE_CURRENCY || 'USD';
 
   // Require a word boundary after an optional ISO code so "dinner" isn't read as "DIN".
-  const match = text.match(
-    /([$€£¥])?\s?(\d+(?:\.\d{1,2})?)(?:\s+([A-Za-z]{3})\b)?/,
-  );
+  const match = text.match(/([$€£¥])?\s?(\d+(?:\.\d{1,2})?)(?:\s+([A-Za-z]{3})\b)?/);
   if (!match) return { amount: null, currency: fallbackCurrency, matchedText: null };
 
   const [, symbol, value, code] = match;
-  const currency =
-    (code && code.toUpperCase()) || symbolMap[symbol] || fallbackCurrency;
+  const currency = (code && code.toUpperCase()) || symbolMap[symbol] || fallbackCurrency;
 
   return { amount: Number(value), currency, matchedText: match[0] };
 }
@@ -105,8 +143,8 @@ function extractDescription(text, amountText) {
   let desc = text;
   if (amountText) desc = desc.replace(amountText, ' ');
   desc = desc
-    .replace(/\d+\s*ways?/gi, ' ')
-    .replace(/\b(split|equally|among|between|evenly|for)\b/gi, ' ')
+    .replace(/\d+\s*(?:ways?|people|persons?)/gi, ' ')
+    .replace(/\b(split|equally|among|between|evenly|for|the|paid|spent|covered)\b/gi, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 
