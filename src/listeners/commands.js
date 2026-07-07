@@ -28,6 +28,11 @@ import { startSplitwiseOAuth, completeSplitwiseOAuth, isSplitwiseLinked } from '
 import { logExpense } from '../services/expensePipeline.js';
 import { setReminderCadence } from '../agents/nudgeAgent.js';
 
+/** Post a slash-command response visible to the whole channel (good for demos). */
+function inChannel(payload) {
+  return { response_type: 'in_channel', ...payload };
+}
+
 /**
  * Attach the `/settl` command router to the Bolt app.
  * @param {import('@slack/bolt').App} app
@@ -111,10 +116,12 @@ async function handleSummary({ command, respond }) {
 
   const expenses = await getGroupExpenses(group.group_id);
   const balances = calculateBalances(group, expenses);
-  await respond({
-    blocks: buildSummaryMessage(group, balances, { expenseCount: expenses.length }),
-    text: 'Current tab',
-  });
+  await respond(
+    inChannel({
+      blocks: buildSummaryMessage(group, balances, { expenseCount: expenses.length }),
+      text: 'Current tab',
+    }),
+  );
 }
 
 /** `/settl settle @user` — surface a resolvable balance with action buttons. */
@@ -162,16 +169,18 @@ async function handleSettle({ command, args, respond, client }) {
     venmoRecipient = userInfo.user?.name ?? null;
   }
 
-  await respond({
-    blocks: buildSettleMessage({
-      group,
-      requesterId: command.user_id,
-      counterpartyId,
-      debt,
-      venmoRecipient,
+  await respond(
+    inChannel({
+      blocks: buildSettleMessage({
+        group,
+        requesterId: command.user_id,
+        counterpartyId,
+        debt,
+        venmoRecipient,
+      }),
+      text: debt ? 'Settle up' : 'All square',
     }),
-    text: debt ? 'Settle up' : 'All square',
-  });
+  );
 }
 
 /** `/settl create [name] @a @b` — initialize a group bound to this channel. */
@@ -192,10 +201,12 @@ async function handleCreate({ command, args, respond, client }) {
       text += ` Could not find: ${unresolved.map((h) => `@${h}`).join(', ')}. Use Slack's @ autocomplete to pick users.`;
     }
 
-    await respond({
-      blocks: buildGroupCreatedMessage(group, unresolved),
-      text,
-    });
+    await respond(
+      inChannel({
+        blocks: buildGroupCreatedMessage(group, unresolved),
+        text,
+      }),
+    );
   } catch (error) {
     if (error.code === 'group_exists') {
       return respond({

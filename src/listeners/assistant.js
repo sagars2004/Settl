@@ -14,10 +14,13 @@ import {
   getGroupByChannel,
   getGroupExpenses,
 } from '../services/datastoreService.js';
-import { calculateBalances } from '../utils/balanceCalculator.js';
+import { calculateBalances, findDebtBetweenUsers } from '../utils/balanceCalculator.js';
+import { parseSettleTarget } from '../utils/groupParser.js';
+import { resolveUserHandles } from '../utils/userResolver.js';
 import {
   buildAssistantWelcome,
   buildSummaryMessage,
+  buildSettleMessage,
   buildErrorMessage,
 } from '../utils/formatter.js';
 
@@ -52,6 +55,13 @@ export function registerAssistant(app) {
         });
       } catch (error) {
         logger.error('[assistant] threadStarted failed:', error);
+        await say({
+          blocks: buildErrorMessage(
+            "Couldn't start Settl",
+            'Try closing and reopening the Agent panel from the channel.',
+          ),
+          text: "Couldn't start Settl.",
+        });
       }
     },
 
@@ -90,9 +100,19 @@ export function registerAssistant(app) {
 
         switch (parsed.intent) {
           case 'summary':
-          case 'settle':
             await respondWithSummary({ contextChannel, say });
-            return;
+            break;
+
+          case 'settle':
+            await respondWithSettle({
+              contextChannel,
+              messageText: message.text ?? '',
+              userId: message.user,
+              client,
+              say,
+              parsed,
+            });
+            break;
 
           case 'log_expense':
             await logExpense({
@@ -107,7 +127,7 @@ export function registerAssistant(app) {
               setStatus: (status) => setStatus(status),
               logger,
             });
-            return;
+            break;
 
           default:
             await respondWithHelp({ contextChannel, say });
@@ -121,6 +141,8 @@ export function registerAssistant(app) {
           ),
           text: "I couldn't process that.",
         });
+      } finally {
+        await setStatus('').catch(() => {});
       }
     },
   });
@@ -146,9 +168,123 @@ async function respondWithSummary({ contextChannel, say }) {
 }
 
 /**
+ * Resolve a settle counterparty from parsed mentions, bare handles, or free text.
+ * @param {object} params
+ */
+async function resolveSettleCounterparty({ messageText, parsed, client }) {
+  let counterpartyId = parsed.slackMentions?.[0] ?? null;
+  let bareHandle = parsed.bareHandles?.[0] ?? null;
+
+  if (!counterpartyId && !bareHandle) {
+    const target = parseSettleTarget(messageText);
+    counterpartyId = target.slackUserId;
+    bareHandle = target.bareHandle;
+  }
+
+  if (!counterpartyId && bareHandle) {
+    const { resolved, unresolved } = await resolveUserHandles(client, [bareHandle]);
+    if (unresolved.length) {
+      return { counterpartyId: null, unresolved: bareHandle };
+    }
+    counterpartyId = resolved[0];
+  }
+
+  return { counterpartyId, unresolved: null };
+}
+
+/**
+ * @param {object} args
+ */
+async function respondWithSettle({ contextChannel, messageText, userId, client, say, parsed }) {
+  const group = await getGroupByChannel(contextChannel);
+  if (!group) {
+    await say({ blocks: NO_GROUP_MESSAGE, text: 'No group in this channel yet.' });
+    return;
+  }
+
+  const { counterpartyId, unresolved } = await resolveSettleCounterparty({
+    messageText,
+    parsed,
+    client,
+  });
+
+  if (unresolved) {
+    await say({
+      blocks: buildErrorMessage(
+        'Who to settle with?',
+        `Couldn't find \`@${unresolved}\`. @mention them, e.g. _"settle with @phillip"_.`,
+      ),
+      text: "Couldn't find that person.",
+    });
+    return;
+  }
+
+  if (!counterpartyId) {
+    const expenses = await getGroupExpenses(group.group_id);
+    const balances = calculateBalances(group, expenses);
+    await say({
+      blocks: [
+        ...buildSummaryMessage(group, balances, { expenseCount: expenses.length }),
+        {
+          type: 'context',
+          elements: [
+            {
+              type: 'mrkdwn',
+              text: 'To settle with someone, say _"settle with @phillip"_ or use `/settl settle @user`.',
+            },
+          ],
+        },
+      ],
+      text: 'Current tab',
+    });
+    return;
+  }
+
+  if (counterpartyId === userId) {
+    await say({
+      blocks: buildErrorMessage("Can't settle with yourself", 'Pick someone else from the group.'),
+      text: "You can't settle with yourself.",
+    });
+    return;
+  }
+
+  if (!group.members.includes(counterpartyId)) {
+    await say({
+      blocks: buildErrorMessage(
+        'Not in group',
+        `<@${counterpartyId}> isn't in *${group.name}*. Run \`/settl members\` to see the roster.`,
+      ),
+      text: 'Not in group.',
+    });
+    return;
+  }
+
+  const expenses = await getGroupExpenses(group.group_id);
+  const balances = calculateBalances(group, expenses);
+  const debt = findDebtBetweenUsers(balances, userId, counterpartyId);
+
+  let venmoRecipient;
+  if (debt && debt.to === userId) {
+    const info = await client.users.info({ user: userId });
+    venmoRecipient = info.user?.name ?? null;
+  }
+
+  await say({
+    blocks: buildSettleMessage({
+      group,
+      requesterId: userId,
+      counterpartyId,
+      debt,
+      venmoRecipient,
+    }),
+    text: debt ? 'Settle up' : 'All square',
+  });
+}
+
+/**
  * @param {{ contextChannel: string, say: Function }} args
  */
 async function respondWithHelp({ contextChannel, say }) {
   const group = contextChannel ? await getGroupByChannel(contextChannel) : null;
-  await say({ blocks: buildAssistantWelcome(group), text: 'Here\'s what I can do.' });
+  await say({ blocks: buildAssistantWelcome(group), text: "Here's what I can do." });
 }
