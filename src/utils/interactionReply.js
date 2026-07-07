@@ -32,11 +32,15 @@ export async function postFollowUp({ client, body, respond, payload }) {
  * @param {object} args.body
  * @param {object} args.payload
  */
-export async function updateSourceMessage({ client, body, payload }) {
+export async function updateSourceMessage({ client, body, payload, respond }) {
   const channel = body.channel?.id;
   const ts = body.message?.ts;
 
   if (channel && ts) {
     return client.chat.update({ channel, ts, ...payload });
+  }
+
+  if (respond) {
+    return respond({ replace_original: true, ...payload });
   }
 }

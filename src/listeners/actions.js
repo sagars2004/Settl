@@ -29,6 +29,81 @@ import {
 } from '../utils/formatter.js';
 import { postFollowUp, updateSourceMessage } from '../utils/interactionReply.js';
 
+const EXPIRED_REVIEW_MESSAGE = buildErrorMessage(
+  'Review expired',
+  'This review expired or the app restarted — log the expense again.',
+);
+
+/**
+ * Safely parse a button `value` JSON payload.
+ * @param {string|undefined} raw
+ * @returns {{ ok: true, data: object } | { ok: false }}
+ */
+function parseActionValue(raw) {
+  try {
+    return { ok: true, data: JSON.parse(raw ?? '{}') };
+  } catch {
+    return { ok: false };
+  }
+}
+
+/**
+ * Show a Block Kit error in-thread when a button payload is invalid.
+ */
+async function showInvalidAction({ client, body, respond }) {
+  await postFollowUp({
+    client,
+    body,
+    respond,
+    payload: {
+      blocks: buildErrorMessage(
+        'Invalid button',
+        'That action is stale — refresh the tab or log the expense again.',
+      ),
+      text: 'Invalid button state.',
+    },
+  });
+}
+
+/**
+ * Replace a review card when its pending draft no longer exists.
+ */
+async function showExpiredReview({ client, body }) {
+  await updateSourceMessage({
+    client,
+    body,
+    payload: { blocks: EXPIRED_REVIEW_MESSAGE, text: 'Review expired' },
+  });
+}
+
+/**
+ * Standard action-handler error feedback.
+ */
+async function showActionError({ client, body, respond, title, message }) {
+  await postFollowUp({
+    client,
+    body,
+    respond,
+    payload: {
+      blocks: buildErrorMessage(title, message),
+      text: title,
+    },
+  });
+}
+
+/**
+ * Commit a pending review and delete the draft only after success.
+ * @param {string} reviewId
+ * @param {() => Promise<{ ok?: boolean }>} commit
+ */
+async function finalizeReviewCommit(reviewId, commit) {
+  const result = await commit();
+  if (result?.ok) {
+    deletePendingReview(reviewId);
+  }
+  return result;
+}
+
 // Canonical action_id constants shared with the formatter.
 export const ACTION_IDS = {
   MARK_SETTLED: 'settl_mark_settled',
@@ -54,8 +129,12 @@ export const VIEW_IDS = {
 export function registerActionListeners(app) {
   app.action(ACTION_IDS.MARK_SETTLED, async ({ ack, body, action, client, respond, logger }) => {
     await ack();
+    const parsed = parseActionValue(action.value);
+    if (!parsed.ok) {
+      return showInvalidAction({ client, body, respond });
+    }
     try {
-      const { groupId, debtorId, creditorId } = JSON.parse(action.value ?? '{}');
+      const { groupId, debtorId, creditorId } = parsed.data;
       const result = await markBalanceSettled(groupId, debtorId, creditorId);
       await syncSettlementToSplitwise(groupId, debtorId).catch((e) =>
         logger.warn('[actions] Splitwise settlement sync skipped:', e.message),
@@ -70,19 +149,24 @@ export function registerActionListeners(app) {
       });
     } catch (error) {
       logger.error('[actions] mark_settled failed:', error);
-      await postFollowUp({
+      await showActionError({
         client,
         body,
         respond,
-        payload: { text: "Couldn't settle that balance." },
+        title: "Couldn't settle",
+        message: "That balance couldn't be cleared. Try `/settl settle @user` or ask what's the tab.",
       });
     }
   });
 
   app.action(ACTION_IDS.SEND_VENMO, async ({ ack, action, client, body, respond, logger }) => {
     await ack();
+    const parsed = parseActionValue(action.value);
+    if (!parsed.ok) {
+      return showInvalidAction({ client, body, respond });
+    }
     try {
-      const { username, amount, note } = JSON.parse(action.value ?? '{}');
+      const { username, amount, note } = parsed.data;
       if (!username) {
         return postFollowUp({
           client,
@@ -102,6 +186,13 @@ export function registerActionListeners(app) {
       });
     } catch (error) {
       logger.error('[actions] send_venmo failed:', error);
+      await showActionError({
+        client,
+        body,
+        respond,
+        title: "Couldn't open Venmo",
+        message: 'Something went wrong building the payment link. Try again or pay manually.',
+      });
     }
   });
 
@@ -118,8 +209,12 @@ export function registerActionListeners(app) {
 
   app.action(ACTION_IDS.VIEW_TAB, async ({ ack, action, client, body, respond, logger }) => {
     await ack();
+    const parsed = parseActionValue(action.value);
+    if (!parsed.ok) {
+      return showInvalidAction({ client, body, respond });
+    }
     try {
-      const { groupId } = JSON.parse(action.value ?? '{}');
+      const { groupId } = parsed.data;
       const group = await getGroup(groupId);
       const expenses = await getGroupExpenses(groupId);
       const balances = calculateBalances(group, expenses);
@@ -134,13 +229,24 @@ export function registerActionListeners(app) {
       });
     } catch (error) {
       logger.error('[actions] view_tab failed:', error);
+      await showActionError({
+        client,
+        body,
+        respond,
+        title: "Couldn't load tab",
+        message: 'Try `/settl summary` or ask "what\'s the tab?" in the Assistant.',
+      });
     }
   });
 
   app.action(ACTION_IDS.SUMMARY_SETTLE, async ({ ack, body, action, client, respond, logger }) => {
     await ack();
+    const parsed = parseActionValue(action.value);
+    if (!parsed.ok) {
+      return showInvalidAction({ client, body, respond });
+    }
     try {
-      const { groupId, debtorId, creditorId } = JSON.parse(action.value ?? '{}');
+      const { groupId, debtorId, creditorId } = parsed.data;
       const group = await getGroup(groupId);
       const expenses = await getGroupExpenses(groupId);
       const balances = calculateBalances(group, expenses);
@@ -166,24 +272,28 @@ export function registerActionListeners(app) {
       });
     } catch (error) {
       logger.error('[actions] summary_settle failed:', error);
-      await postFollowUp({
+      await showActionError({
         client,
         body,
         respond,
-        payload: {
-          blocks: buildErrorMessage('Settle failed', "Couldn't open the settle card. Try `/settl settle @user`."),
-          text: "Couldn't settle.",
-        },
+        title: 'Settle failed',
+        message: "Couldn't open the settle card. Try `/settl settle @user`.",
       });
     }
   });
 
-  app.action(ACTION_IDS.TOGGLE_PARTICIPANT, async ({ ack, body, action, client, logger }) => {
+  app.action(ACTION_IDS.TOGGLE_PARTICIPANT, async ({ ack, body, action, client, respond, logger }) => {
     await ack();
+    const parsed = parseActionValue(action.value);
+    if (!parsed.ok) {
+      return showInvalidAction({ client, body, respond });
+    }
     try {
-      const { reviewId, memberId } = JSON.parse(action.value ?? '{}');
+      const { reviewId, memberId } = parsed.data;
       const draft = getPendingReview(reviewId);
-      if (!draft) return;
+      if (!draft) {
+        return showExpiredReview({ client, body });
+      }
 
       const selected = new Set(draft.selectedMembers ?? []);
       if (selected.has(memberId)) {
@@ -193,6 +303,10 @@ export function registerActionListeners(app) {
       }
 
       const updated = updatePendingReview(reviewId, { selectedMembers: [...selected] });
+      if (!updated) {
+        return showExpiredReview({ client, body });
+      }
+
       await updateSourceMessage({
         client,
         body,
@@ -212,23 +326,27 @@ export function registerActionListeners(app) {
       });
     } catch (error) {
       logger.error('[actions] toggle_participant failed:', error);
+      await showActionError({
+        client,
+        body,
+        respond,
+        title: "Couldn't update split",
+        message: 'Try toggling members again or log the expense from scratch.',
+      });
     }
   });
 
   app.action(ACTION_IDS.CONFIRM_EQUAL_SPLIT, async ({ ack, body, action, client, respond, logger }) => {
     await ack();
+    const parsed = parseActionValue(action.value);
+    if (!parsed.ok) {
+      return showInvalidAction({ client, body, respond });
+    }
     try {
-      const { reviewId } = JSON.parse(action.value ?? '{}');
+      const { reviewId } = parsed.data;
       const draft = getPendingReview(reviewId);
       if (!draft) {
-        return updateSourceMessage({
-          client,
-          body,
-          payload: {
-            blocks: buildErrorMessage('Expired', 'This review expired — log the expense again.'),
-            text: 'Review expired',
-          },
-        });
+        return showExpiredReview({ client, body });
       }
 
       if (!draft.selectedMembers?.length) {
@@ -240,28 +358,50 @@ export function registerActionListeners(app) {
         });
       }
 
-      deletePendingReview(reviewId);
-      await commitExpense({
-        parsed: draft.parsed,
-        group: draft.group,
-        participants: draft.selectedMembers,
-        userId: draft.userId,
-        client,
-        reply: (payload) => updateSourceMessage({ client, body, payload }),
-        conversion: draft.conversion,
-        logger,
-      });
+      await finalizeReviewCommit(reviewId, () =>
+        commitExpense({
+          parsed: draft.parsed,
+          group: draft.group,
+          participants: draft.selectedMembers,
+          userId: draft.userId,
+          client,
+          reply: (payload) => updateSourceMessage({ client, body, payload }),
+          conversion: draft.conversion,
+          logger,
+        }),
+      );
     } catch (error) {
       logger.error('[actions] confirm_equal_split failed:', error);
+      await showActionError({
+        client,
+        body,
+        respond,
+        title: "Couldn't log expense",
+        message: 'Something went wrong saving that split. Your review card is still open — try again.',
+      });
     }
   });
 
-  app.action(ACTION_IDS.OPEN_CUSTOM_SPLIT, async ({ ack, body, action, client, logger }) => {
+  app.action(ACTION_IDS.OPEN_CUSTOM_SPLIT, async ({ ack, body, action, client, respond, logger }) => {
     await ack();
+    const parsed = parseActionValue(action.value);
+    if (!parsed.ok) {
+      return showInvalidAction({ client, body, respond });
+    }
     try {
-      const { reviewId } = JSON.parse(action.value ?? '{}');
+      const { reviewId } = parsed.data;
       const draft = getPendingReview(reviewId);
-      if (!draft || !draft.selectedMembers?.length) return;
+      if (!draft) {
+        return showExpiredReview({ client, body });
+      }
+      if (!draft.selectedMembers?.length) {
+        return postFollowUp({
+          client,
+          body,
+          respond,
+          payload: { text: 'Pick at least one person before setting custom amounts.' },
+        });
+      }
 
       const memberNames = {};
       await Promise.all(
@@ -283,12 +423,23 @@ export function registerActionListeners(app) {
       });
     } catch (error) {
       logger.error('[actions] open_custom_split failed:', error);
+      await showActionError({
+        client,
+        body,
+        respond,
+        title: "Couldn't open custom split",
+        message: 'Try again or use Split equally on the review card.',
+      });
     }
   });
 
-  app.action(ACTION_IDS.CANCEL_REVIEW, async ({ ack, body, action, client }) => {
+  app.action(ACTION_IDS.CANCEL_REVIEW, async ({ ack, body, action, client, respond }) => {
     await ack();
-    const { reviewId } = JSON.parse(action.value ?? '{}');
+    const parsed = parseActionValue(action.value);
+    if (!parsed.ok) {
+      return showInvalidAction({ client, body, respond });
+    }
+    const { reviewId } = parsed.data;
     deletePendingReview(reviewId);
     await updateSourceMessage({
       client,
@@ -305,11 +456,31 @@ export function registerActionListeners(app) {
   });
 
   app.view(VIEW_IDS.CUSTOM_SPLIT, async ({ ack, body, view, client, logger }) => {
+    let reviewId;
     try {
-      const { reviewId } = JSON.parse(view.private_metadata ?? '{}');
+      const meta = JSON.parse(view.private_metadata ?? '{}');
+      reviewId = meta.reviewId;
+    } catch {
+      await ack({
+        response_action: 'errors',
+        errors: {
+          [`member_${Object.keys(view.state?.values ?? {})[0] ?? 'member_unknown'}`]:
+            'Invalid form state — close and open Custom amounts again.',
+        },
+      });
+      return;
+    }
+
+    try {
       const draft = getPendingReview(reviewId);
       if (!draft) {
-        await ack();
+        const firstBlock = Object.keys(view.state?.values ?? {})[0] ?? 'member_unknown';
+        await ack({
+          response_action: 'errors',
+          errors: {
+            [firstBlock]: 'This review expired — close and log the expense again.',
+          },
+        });
         return;
       }
 
@@ -331,33 +502,39 @@ export function registerActionListeners(app) {
         return;
       }
 
-      deletePendingReview(reviewId);
-
-      await commitExpense({
-        parsed: draft.parsed,
-        group: draft.group,
-        participants: draft.selectedMembers,
-        userId: body.user.id,
-        client,
-        reply: async (payload) => {
-          if (draft.assistantChannelId && draft.assistantThreadTs) {
-            await client.chat.postMessage({
-              channel: draft.assistantChannelId,
-              thread_ts: draft.assistantThreadTs,
-              ...payload,
-            });
-          }
-        },
-        conversion: draft.conversion,
-        splitType: 'custom',
-        customSplits,
-        logger,
-      });
+      await finalizeReviewCommit(reviewId, () =>
+        commitExpense({
+          parsed: draft.parsed,
+          group: draft.group,
+          participants: draft.selectedMembers,
+          userId: body.user.id,
+          client,
+          reply: async (payload) => {
+            if (draft.assistantChannelId && draft.assistantThreadTs) {
+              await client.chat.postMessage({
+                channel: draft.assistantChannelId,
+                thread_ts: draft.assistantThreadTs,
+                ...payload,
+              });
+            }
+          },
+          conversion: draft.conversion,
+          splitType: 'custom',
+          customSplits,
+          logger,
+        }),
+      );
 
       await ack();
     } catch (error) {
       logger.error('[actions] custom_split submit failed:', error);
-      await ack();
+      const firstBlock = Object.keys(view.state?.values ?? {})[0];
+      await ack({
+        response_action: 'errors',
+        errors: {
+          [firstBlock ?? 'member_unknown']: "Couldn't save that split — adjust amounts and try again.",
+        },
+      });
     }
   });
 }

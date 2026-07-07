@@ -108,6 +108,7 @@ export async function logExpense({
       originalAmount: amount,
       originalCurrency: currency,
       fxRate: converted.rate,
+      fxFallback: converted.fxFallback,
     };
     amount = converted.amount;
     currency = baseCurrency;

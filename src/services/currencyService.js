@@ -14,23 +14,24 @@ const FX_API_BASE = process.env.FX_API_BASE || 'https://api.frankfurter.app';
  * @param {number} amount
  * @param {string} fromCurrency  ISO 4217 (e.g. "EUR")
  * @param {string} toCurrency    ISO 4217 (e.g. "USD")
- * @returns {Promise<{ amount: number, rate: number, from: string, to: string, converted: boolean }>}
+ * @returns {Promise<{ amount: number, rate: number, from: string, to: string, converted: boolean, fxFallback?: boolean }>}
  */
 export async function convertCurrency(amount, fromCurrency, toCurrency) {
   const from = fromCurrency?.toUpperCase();
   const to = toCurrency?.toUpperCase();
 
   if (!from || !to || from === to) {
-    return { amount, rate: 1, from, to, converted: false };
+    return { amount, rate: 1, from, to, converted: false, fxFallback: false };
   }
 
-  const rate = await getExchangeRate(from, to);
+  const { rate, fxFallback } = await getExchangeRate(from, to);
   return {
     amount: Number((amount * rate).toFixed(2)),
     rate,
     from,
     to,
-    converted: rate !== 1 || from !== to,
+    converted: true,
+    fxFallback,
   };
 }
 
@@ -38,16 +39,17 @@ export async function convertCurrency(amount, fromCurrency, toCurrency) {
  * Fetch (or return cached) exchange rate for a currency pair.
  * @param {string} from
  * @param {string} to
- * @returns {Promise<number>}
+ * @returns {Promise<{ rate: number, fxFallback: boolean }>}
  */
 export async function getExchangeRate(from, to) {
   const key = `${from}:${to}`;
   const cached = rateCache.get(key);
   if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
-    return cached.rate;
+    return { rate: cached.rate, fxFallback: cached.fxFallback };
   }
 
   let rate = 1;
+  let fxFallback = false;
   try {
     const url = `${FX_API_BASE}/latest?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
     const response = await fetch(url, { signal: AbortSignal.timeout(5000) });
@@ -62,8 +64,9 @@ export async function getExchangeRate(from, to) {
   } catch (error) {
     console.warn(`[currencyService] FX lookup failed (${from}->${to}):`, error.message);
     rate = 1;
+    fxFallback = true;
   }
 
-  rateCache.set(key, { rate, fetchedAt: Date.now() });
-  return rate;
+  rateCache.set(key, { rate, fxFallback, fetchedAt: Date.now() });
+  return { rate, fxFallback };
 }

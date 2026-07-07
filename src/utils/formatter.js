@@ -22,19 +22,44 @@ export function formatMoney(currency, amount) {
 
 /**
  * Build a short context badge line describing how the expense was processed.
- * @param {{ parsedVia?: 'ai'|'regex', splitwise?: object }} meta
+ * @param {{ parsedVia?: 'ai'|'regex', splitwise?: object, conversion?: object }} meta
  * @returns {string}
  */
 function buildBadges(meta = {}) {
   const badges = [];
   if (meta.parsedVia === 'ai') badges.push(':sparkles: Parsed by Slack AI');
+  if (meta.conversion?.fxFallback) {
+    badges.push(':warning: FX rate unavailable — used 1:1 estimate');
+  }
   if (meta.splitwise?.synced) {
     const via = meta.splitwise.via === 'mcp' ? 'Splitwise MCP' : 'Splitwise';
     badges.push(`:white_check_mark: Synced to ${via}`);
   } else if (meta.splitwise?.reason === 'error') {
     badges.push(':warning: Splitwise sync skipped');
+  } else if (meta.splitwise?.reason === 'not_linked') {
+    badges.push(':information_source: Logged locally — Splitwise not linked');
   }
   return badges.join('  ·  ');
+}
+
+/**
+ * Format the FX conversion subtitle for confirmation/review cards.
+ * @param {object} conversion
+ * @param {string} targetCurrency
+ * @returns {string|null}
+ */
+function formatConversionLine(conversion, targetCurrency) {
+  if (
+    !conversion?.originalCurrency ||
+    conversion.originalCurrency === targetCurrency ||
+    conversion.originalAmount == null
+  ) {
+    return null;
+  }
+  if (conversion.fxFallback) {
+    return `_Converted from ${formatMoney(conversion.originalCurrency, conversion.originalAmount)} · :warning: live rate unavailable (1:1 estimate)_`;
+  }
+  return `_Converted from ${formatMoney(conversion.originalCurrency, conversion.originalAmount)} · rate ${conversion.fxRate}_`;
 }
 
 /**
@@ -62,13 +87,10 @@ export function buildExpenseConfirmation(expense, balances, group, meta = {}) {
 
   const splitText = [payerLine, ...shareLines, payerOwesLine].filter(Boolean).join('\n');
 
-  const converted =
-    conversion?.originalCurrency &&
-    conversion.originalCurrency !== currency &&
-    conversion.originalAmount != null;
+  const conversionLine = formatConversionLine(conversion, currency);
 
-  const headline = converted
-    ? `:receipt: Logged *${formatMoney(currency, expense.total_amount)}* — _${expense.description}_\n_Converted from ${formatMoney(conversion.originalCurrency, conversion.originalAmount)} · rate ${conversion.fxRate}_`
+  const headline = conversionLine
+    ? `:receipt: Logged *${formatMoney(currency, expense.total_amount)}* — _${expense.description}_\n${conversionLine}`
     : `:receipt: Logged *${formatMoney(currency, expense.total_amount)}* — _${expense.description}_`;
 
   const blocks = [
@@ -109,7 +131,7 @@ export function buildExpenseConfirmation(expense, balances, group, meta = {}) {
     );
   }
 
-  const badges = buildBadges(meta);
+  const badges = buildBadges({ ...meta, conversion });
   if (badges) {
     blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: badges }] });
   }
@@ -217,13 +239,10 @@ export function buildExpenseReviewMessage({
   const count = selected.size || 1;
   const preview = formatMoney(currency, amount / count);
 
-  const converted =
-    conversion?.originalCurrency &&
-    conversion.originalCurrency !== currency &&
-    conversion.originalAmount != null;
+  const conversionLine = formatConversionLine(conversion, currency);
 
-  const headline = converted
-    ? `:memo: *Review expense* — ${formatMoney(currency, amount)} _${description}_\n_Converted from ${formatMoney(conversion.originalCurrency, conversion.originalAmount)}_`
+  const headline = conversionLine
+    ? `:memo: *Review expense* — ${formatMoney(currency, amount)} _${description}_\n${conversionLine}`
     : `:memo: *Review expense* — ${formatMoney(currency, amount)} _${description}_`;
 
   const blocks = [
