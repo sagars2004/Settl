@@ -17,23 +17,30 @@ const REQUEST_TIMEOUT_MS = 8000;
  * @property {string|null} currency  ISO 4217, uppercase.
  * @property {string|null} description
  * @property {number|null} waysCount  Explicit "N ways" count, if stated.
+ * @property {string[]} [coPayerNames]  Bare names of people who paid alongside the author.
  */
 
 const SYSTEM_PROMPT = [
   'You are the parsing layer for Settl, a Slack expense-splitting agent.',
   'Read the user message and return a single JSON object with EXACTLY these keys:',
   '- intent: one of "log_expense", "summary", "settle", "help" (use these exact lowercase values).',
-  '    log_expense = recording money someone spent (e.g. "I paid $84 for dinner").',
-  '    summary = wants the current tab / who owes what.',
-  '    settle = wants to settle up or mark a debt paid.',
+  '    log_expense = recording a new cost, INCLUDING splitting a bill (e.g. "I paid $84 for dinner", "split $105 dinner 3 ways"). The word "split" almost always means log_expense.',
+  '    summary = asking to SEE the current tab / who owes what (no new amount).',
+  '    settle = paying back or clearing an EXISTING debt (e.g. "settle up with Tim", "I paid Tim back"). Only use settle when there is no new expense being described.',
   '    help = greetings or anything unclear.',
+  'If the message contains a new amount AND a purchase/description (dinner, groceries...), it is log_expense — never settle or summary.',
   '- amount: the numeric total as a number, or null. Convert words to digits ("eighty-four" -> 84).',
   '- currency: 3-letter ISO code (USD, EUR, GBP, JPY...). Use "USD" for "$" or "bucks". null if no amount.',
   '- description: a short 2-4 word label for the expense, with no amounts or split words. null if none.',
   '- waysCount: integer ONLY if the user says "N ways"/"N people"/"between the N of us"; otherwise null.',
+  '- coPayerNames: array of bare names of anyone who paid *with* the author (e.g. "Tim and I paid" -> ["Tim"]). Empty array if only the author paid.',
   'Return ONLY the JSON object — no prose, no markdown fences.',
-  'Example input: "split $84 dinner 3 ways"',
-  'Example output: {"intent":"log_expense","amount":84,"currency":"USD","description":"dinner","waysCount":3}',
+  'Example input: "Tim and I paid $50 for lunch"',
+  'Example output: {"intent":"log_expense","amount":50,"currency":"USD","description":"lunch","waysCount":null,"coPayerNames":["Tim"]}',
+  'Example input: "Split $105 dinner between the 3 of us"',
+  'Example output: {"intent":"log_expense","amount":105,"currency":"USD","description":"dinner","waysCount":3,"coPayerNames":[]}',
+  'Example input: "settle up with Tim"',
+  'Example output: {"intent":"settle","amount":null,"currency":null,"description":null,"waysCount":null,"coPayerNames":[]}',
 ].join('\n');
 
 const JSON_SCHEMA = {
@@ -44,8 +51,12 @@ const JSON_SCHEMA = {
     currency: { type: ['string', 'null'] },
     description: { type: ['string', 'null'] },
     waysCount: { type: ['integer', 'null'] },
+    coPayerNames: {
+      type: 'array',
+      items: { type: 'string' },
+    },
   },
-  required: ['intent', 'amount', 'currency', 'description', 'waysCount'],
+  required: ['intent', 'amount', 'currency', 'description', 'waysCount', 'coPayerNames'],
   additionalProperties: false,
 };
 
@@ -261,8 +272,20 @@ function normalize(raw) {
     typeof raw?.waysCount === 'number' && raw.waysCount > 0
       ? Math.floor(raw.waysCount)
       : null;
+  const coPayerNames = Array.isArray(raw?.coPayerNames)
+    ? raw.coPayerNames
+        .filter((name) => typeof name === 'string' && name.trim())
+        .map((name) => name.trim())
+    : [];
 
-  return { intent: normalizeIntent(raw?.intent, amount), amount, currency, description, waysCount };
+  return {
+    intent: normalizeIntent(raw?.intent, amount),
+    amount,
+    currency,
+    description,
+    waysCount,
+    coPayerNames,
+  };
 }
 
 /**

@@ -73,19 +73,30 @@ function formatConversionLine(conversion, targetCurrency) {
 export function buildExpenseConfirmation(expense, balances, group, meta = {}) {
   const { conversion } = meta;
   const currency = expense.currency;
+  const payers = new Set(expense.payers ?? []);
 
   const payerLine = `• <@${expense.paid_by}> paid *${formatMoney(currency, expense.total_amount)}*`;
+
   const shareLines = (expense.splits ?? [])
-    .filter((split) => split.user_id !== expense.paid_by)
-    .map((split) => `• <@${split.user_id}> owes *${formatMoney(currency, split.amount)}*`);
+    .filter((split) => split.user_id !== expense.paid_by && split.amount >= 0.01)
+    .map((split) => {
+      if (payers.has(split.user_id)) {
+        return `• <@${split.user_id}> :credit_card: already paid _(portion ${formatMoney(currency, split.amount)})_`;
+      }
+      return `• <@${split.user_id}> owes *${formatMoney(currency, split.amount)}*`;
+    });
 
   const payerShare = (expense.splits ?? []).find((split) => split.user_id === expense.paid_by);
-  const payerOwesLine =
+  const payerNet =
     payerShare && payerShare.amount > 0
-      ? `• <@${expense.paid_by}> owes *${formatMoney(currency, payerShare.amount)}* _(their share)_`
+      ? Number((expense.total_amount - payerShare.amount).toFixed(2))
+      : null;
+  const payerNetLine =
+    payerNet != null && payerNet >= 0.01
+      ? `• <@${expense.paid_by}> nets *${formatMoney(currency, payerNet)}* after their portion`
       : null;
 
-  const splitText = [payerLine, ...shareLines, payerOwesLine].filter(Boolean).join('\n');
+  const splitText = [payerLine, payerNetLine, ...shareLines].filter(Boolean).join('\n');
 
   const conversionLine = formatConversionLine(conversion, currency);
 
@@ -232,12 +243,16 @@ export function buildExpenseReviewMessage({
   currency,
   description,
   paidBy,
+  payers = [],
+  consumers = [],
   selectedMembers,
   conversion,
 }) {
+  const payerSet = new Set(payers);
   const selected = new Set(selectedMembers);
-  const count = selected.size || 1;
-  const preview = formatMoney(currency, amount / count);
+  const consumerCount = consumers.length || group.members?.length || 1;
+  const perShare = formatMoney(currency, amount / consumerCount);
+  const owingCount = selectedMembers.length;
 
   const conversionLine = formatConversionLine(conversion, currency);
 
@@ -248,16 +263,30 @@ export function buildExpenseReviewMessage({
   const blocks = [
     { type: 'section', text: { type: 'mrkdwn', text: headline } },
     { type: 'divider' },
-    {
+  ];
+
+  if (payers.length) {
+    blocks.push({
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*Who's in?* Tap to include or exclude.\n_Equal split preview: *${preview}* each (${count} ${count === 1 ? 'person' : 'people'})_`,
+        text: `*Already paid*\n${payers.map((id) => `:credit_card: <@${id}>`).join('  ')}`,
       },
+    });
+    blocks.push({ type: 'divider' });
+  }
+
+  blocks.push({
+    type: 'section',
+    text: {
+      type: 'mrkdwn',
+      text: `*Who still owes?* Tap to include or exclude.\n_Share is *${perShare}* each among ${consumerCount} · ${owingCount} ${owingCount === 1 ? 'person' : 'people'} selected_`,
     },
-  ];
+  });
 
   for (const memberId of group.members ?? []) {
+    if (payerSet.has(memberId)) continue;
+
     const included = selected.has(memberId);
     blocks.push({
       type: 'section',
@@ -269,7 +298,7 @@ export function buildExpenseReviewMessage({
         type: 'button',
         text: {
           type: 'plain_text',
-          text: included ? 'Included' : 'Excluded',
+          text: included ? 'Owes share' : 'Excluded',
           emoji: true,
         },
         action_id: ACTION_IDS.TOGGLE_PARTICIPANT,
@@ -323,8 +352,16 @@ export function buildExpenseReviewMessage({
  * @param {object} draft  pending review draft
  * @returns {object}
  */
-export function buildCustomSplitModal({ reviewId, amount, currency, selectedMembers, memberNames = {} }) {
-  const perPerson = selectedMembers.length ? amount / selectedMembers.length : amount;
+export function buildCustomSplitModal({
+  reviewId,
+  amount,
+  currency,
+  selectedMembers,
+  consumers = [],
+  memberNames = {},
+}) {
+  const consumerCount = consumers.length || selectedMembers.length || 1;
+  const perPerson = amount / consumerCount;
 
   const blocks = selectedMembers.map((userId) => ({
     type: 'input',

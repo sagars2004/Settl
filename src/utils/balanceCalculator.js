@@ -40,13 +40,30 @@ export function calculateBalances(group, expenses = []) {
     // Credit the payer for the full amount they fronted.
     net.set(payer, (net.get(payer) ?? 0) + (expense.total_amount ?? 0));
     // Debit unsettled shares; settled shares reduce the payer's outstanding credit.
-    for (const split of expense.splits ?? []) {
-      if (split.settled) {
-        net.set(payer, (net.get(payer) ?? 0) - (split.amount ?? 0));
-      } else {
-        net.set(split.user_id, (net.get(split.user_id) ?? 0) - (split.amount ?? 0));
-      }
+  for (const split of expense.splits ?? []) {
+    const payers = new Set(expense.payers ?? []);
+    const debtors = new Set(expense.debtors ?? []);
+    const hasDebtorFilter = debtors.size > 0;
+
+    if (split.settled) {
+      net.set(payer, (net.get(payer) ?? 0) - (split.amount ?? 0));
+      continue;
     }
+
+    // Primary payer always nets their own portion against what they fronted.
+    if (split.user_id === payer) {
+      net.set(split.user_id, (net.get(split.user_id) ?? 0) - (split.amount ?? 0));
+      continue;
+    }
+
+    // Co-payers already paid — don't debit them on the tab.
+    if (payers.has(split.user_id)) continue;
+
+    // Review card excluded this person from owing.
+    if (hasDebtorFilter && !debtors.has(split.user_id)) continue;
+
+    net.set(split.user_id, (net.get(split.user_id) ?? 0) - (split.amount ?? 0));
+  }
   }
 
   const netBalances = [...net.entries()].map(([userId, value]) => ({

@@ -22,6 +22,9 @@ import { aiParseExpense } from './aiParser.js';
  * @property {string[]} participants Slack user ids sharing the cost.
  * @property {string[]} slackMentions Resolved Slack-encoded @mentions.
  * @property {string[]} bareHandles Plain @handles to resolve via users.list.
+ * @property {string[]} coPayerBareHandles Bare names detected as co-payers.
+ * @property {string[]} coPayerMentionIds Slack ids @mentioned as co-payers.
+ * @property {string[]} payers  Resolved payer ids (filled in pipeline).
  * @property {number|null} waysCount Parsed "N ways" count, if present.
  * @property {'equal'|'custom'} splitType How the total is divided.
  * @property {'ai'|'regex'} parsedVia Which layer produced the fields.
@@ -62,18 +65,30 @@ export async function parseExpense(text, context) {
   // Try the AI layer first for amount/description/currency/waysCount/intent.
   const ai = await aiParseExpense(remainder);
 
+  const paidContext = /\b(paid|spent|covered|bought)\b/i.test(remainder);
+  const coPayerBareHandles = [
+    ...extractCoPayerBareHandles(remainder),
+    ...(ai?.coPayerNames ?? []),
+  ].filter(Boolean);
+  const coPayerBareSet = new Set(coPayerBareHandles.map((h) => h.toLowerCase()));
+
+  // In "X and I paid" messages, @mentions are co-payers — not split participants.
+  const coPayerMentionIds = paidContext && slackMentions.length ? [...slackMentions] : [];
+  const participantBareHandles = bareHandles.filter((h) => !coPayerBareSet.has(h.toLowerCase()));
+
   // Regex heuristics (used as fallback and to fill any gaps the AI left null).
   const regexWays = matchWaysCount(remainder);
   const { amount: regexAmount, currency: regexCurrency, matchedText } = extractAmount(remainder);
   const regexDescription = extractDescription(remainder, matchedText);
 
   const parsedVia = ai ? 'ai' : 'regex';
-  const intent = ai?.intent ?? inferIntent(remainder);
 
   const amount = ai?.amount ?? regexAmount;
   const currency = (ai?.currency ?? regexCurrency) || process.env.DEFAULT_BASE_CURRENCY || 'USD';
   const description = ai?.description || regexDescription;
   const waysCount = ai?.waysCount ?? regexWays;
+
+  const intent = reconcileIntent(ai?.intent ?? inferIntent(remainder), remainder, amount);
 
   return {
     intent,
@@ -81,13 +96,61 @@ export async function parseExpense(text, context) {
     amount,
     currency,
     paidBy: context.authorId,
-    participants: slackMentions,
-    slackMentions,
-    bareHandles,
+    participants: coPayerMentionIds.length ? [] : slackMentions,
+    slackMentions: coPayerMentionIds.length ? [] : slackMentions,
+    bareHandles: participantBareHandles,
+    coPayerBareHandles: [...new Set(coPayerBareHandles)],
+    coPayerMentionIds,
+    payers: [],
     waysCount,
     splitType: 'equal',
     parsedVia,
   };
+}
+
+/**
+ * Detect bare names in "Tim and I paid" / "I and Tim paid" patterns.
+ * @param {string} text
+ * @returns {string[]}
+ */
+function extractCoPayerBareHandles(text) {
+  const handles = [];
+  const patterns = [
+    /([A-Za-z][\w.-]*)\s+and\s+I\s+paid/i,
+    /I\s+and\s+([A-Za-z][\w.-]*)\s+paid/i,
+    /([A-Za-z][\w.-]*)\s+and\s+me\s+paid/i,
+    /me\s+and\s+([A-Za-z][\w.-]*)\s+paid/i,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) handles.push(match[1]);
+  }
+  return handles;
+}
+
+/**
+ * Correct obvious intent misfires. A message that states a NEW amount plus
+ * expense language ("split", "for", "dinner"…) is a log_expense — even if the
+ * model guessed settle/summary (the word "split" often trips small models).
+ * @param {'log_expense'|'summary'|'settle'|'help'} intent
+ * @param {string} text
+ * @param {number|null} amount
+ * @returns {'log_expense'|'summary'|'settle'|'help'}
+ */
+function reconcileIntent(intent, text, amount) {
+  if (intent === 'log_expense') return intent;
+  if (amount == null || amount <= 0) return intent;
+
+  const lower = text.toLowerCase();
+  // Genuine settle/summary phrases keep their intent even with an amount.
+  const explicitSettle = /\b(settle|paid?\s+(back|off)|pay(ing)?\s+(back|up)|square\s+up|owe you|owe him|owe her|owe them)\b/.test(lower);
+  if (explicitSettle) return intent;
+
+  // "Split", a purchase verb, or a description keyword => new expense.
+  const looksLikeExpense = /\b(split|spent|bought|cost|for|paid for|grabbed|covered|dinner|lunch|groceries|drinks|coffee|rent|uber|taxi|bill|tab)\b/.test(lower);
+  if (looksLikeExpense) return 'log_expense';
+
+  return intent;
 }
 
 /**

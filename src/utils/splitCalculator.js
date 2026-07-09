@@ -4,7 +4,7 @@
 
 /**
  * Compute per-user split amounts that sum exactly to `amount`.
- * @param {{ amount: number, splitType: 'equal'|'custom', participants: string[], customSplits?: Array<{userId?: string, user_id?: string, amount: number}> }} input
+ * @param {{ amount: number, splitType: 'equal'|'custom', participants: string[], customSplits?: Array<{userId?: string, user_id?: string, amount: number}>, payers?: string[], paidBy?: string }} input
  * @returns {Array<{ user_id: string, amount: number }>}
  */
 export function computeSplits({ amount, splitType, participants, customSplits }) {

@@ -41,9 +41,27 @@ function hydrateExpense(item) {
     ...split,
     settled: Boolean(split.settled),
   }));
+  let payers = [];
+  if (item.payers_json) {
+    try {
+      payers = JSON.parse(item.payers_json);
+    } catch {
+      payers = [];
+    }
+  }
+  let debtors = [];
+  if (item.debtors_json) {
+    try {
+      debtors = JSON.parse(item.debtors_json);
+    } catch {
+      debtors = [];
+    }
+  }
   return {
     ...item,
     splits,
+    payers,
+    debtors,
     settled: Boolean(item.settled),
     splitwise_expense_id: item.splitwise_expense_id || null,
   };
@@ -172,6 +190,8 @@ export async function createExpense(parsed) {
     currency: parsed.currency ?? 'USD',
     paid_by: parsed.paidBy ?? '',
     splits_json: JSON.stringify(splits),
+    payers_json: JSON.stringify(parsed.payers ?? []),
+    debtors_json: JSON.stringify(parsed.debtors ?? []),
     created_at: new Date().toISOString(),
     settled: false,
     splitwise_expense_id: '',

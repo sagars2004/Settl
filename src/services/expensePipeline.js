@@ -67,7 +67,11 @@ export async function logExpense({
 
   const group = await getGroupByChannel(channelId);
 
-  const { resolved, unresolved } = await resolveUserHandles(client, parsed.bareHandles);
+  const { resolved: participantResolved, unresolved: participantUnresolved } =
+    await resolveUserHandles(client, parsed.bareHandles);
+  const { resolved: coPayerResolved, unresolved: coPayerUnresolved } =
+    await resolveUserHandles(client, parsed.coPayerBareHandles);
+  const unresolved = [...participantUnresolved, ...coPayerUnresolved];
   if (unresolved.length) {
     await reply({
       thread_ts: threadTs,
@@ -80,11 +84,15 @@ export async function logExpense({
     return { ok: false };
   }
 
-  const explicitParticipants = [...new Set([...parsed.slackMentions, ...resolved])];
+  parsed.payers = [
+    ...new Set([parsed.paidBy, ...parsed.coPayerMentionIds, ...coPayerResolved]),
+  ];
+
+  const explicitParticipants = [...new Set([...parsed.slackMentions, ...participantResolved])];
   const hasExplicitParticipants = explicitParticipants.length > 0;
-  parsed.participants = hasExplicitParticipants
-    ? explicitParticipants
-    : (group?.members ?? []);
+  const consumers = hasExplicitParticipants ? explicitParticipants : (group?.members ?? []);
+  parsed.participants = consumers;
+  parsed.consumers = consumers;
 
   const validation = validateExpense(parsed, group);
   if (!validation.ok) {
@@ -120,13 +128,16 @@ export async function logExpense({
     (group?.members?.length ?? 0) > 1;
 
   if (shouldReview) {
-    const selectedMembers = pickDefaultParticipants(group.members, parsed.paidBy, parsed.waysCount);
+    const consumersForReview = pickConsumers(consumers, parsed.paidBy, parsed.waysCount);
+    const selectedMembers = pickDefaultDebtors(consumersForReview, parsed.payers);
     const reviewId = createPendingReview({
       parsed: { ...parsed, amount, currency, parsedVia: parsed.parsedVia },
       group,
       channelId,
       userId,
       conversion,
+      consumers: consumersForReview,
+      payers: parsed.payers,
       selectedMembers,
       assistantChannelId: assistantChannelId ?? channelId,
       assistantThreadTs: assistantThreadTs ?? threadTs,
@@ -141,6 +152,8 @@ export async function logExpense({
         currency,
         description: parsed.description,
         paidBy: parsed.paidBy,
+        payers: parsed.payers,
+        consumers: consumersForReview,
         selectedMembers,
         conversion,
       }),
@@ -150,7 +163,7 @@ export async function logExpense({
   }
 
   return commitExpense({
-    parsed: { ...parsed, amount, currency },
+    parsed: { ...parsed, amount, currency, debtors: pickDefaultDebtors(consumers, parsed.payers) },
     group,
     participants: validation.participants,
     userId,
@@ -188,6 +201,13 @@ export async function commitExpense({
     customSplits,
   });
 
+  const payers = parsed.payers ?? [];
+  const payerSet = new Set(payers);
+  const debtors =
+    parsed.debtors?.length > 0
+      ? parsed.debtors
+      : participants.filter((id) => !payerSet.has(id));
+
   await setStatus?.('Saving to the tab…');
   const expense = await createExpense({
     description: parsed.description,
@@ -196,6 +216,8 @@ export async function commitExpense({
     paidBy: parsed.paidBy,
     groupId: group.group_id,
     splits,
+    payers,
+    debtors,
   });
 
   let splitwise = { synced: false, reason: 'not_linked' };
@@ -224,16 +246,25 @@ export async function commitExpense({
 }
 
 /**
- * Default selected members when opening the review card.
- * Honors waysCount when provided; otherwise selects everyone.
+ * Everyone sharing the cost (denominator for per-person share).
  * @param {string[]} members
  * @param {string} paidBy
  * @param {number|null} waysCount
  */
-function pickDefaultParticipants(members, paidBy, waysCount) {
+function pickConsumers(members, paidBy, waysCount) {
   const roster = [...new Set(members.filter(Boolean))];
   if (!waysCount || waysCount >= roster.length) return roster;
 
   const others = roster.filter((id) => id !== paidBy).slice(0, Math.max(waysCount - 1, 0));
   return [...new Set([paidBy, ...others])];
+}
+
+/**
+ * Default members who still owe money (excludes co-payers).
+ * @param {string[]} consumers
+ * @param {string[]} payers
+ */
+function pickDefaultDebtors(consumers, payers) {
+  const payerSet = new Set(payers);
+  return consumers.filter((id) => !payerSet.has(id));
 }

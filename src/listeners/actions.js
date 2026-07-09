@@ -295,6 +295,8 @@ export function registerActionListeners(app) {
         return showExpiredReview({ client, body });
       }
 
+      if ((draft.payers ?? []).includes(memberId)) return;
+
       const selected = new Set(draft.selectedMembers ?? []);
       if (selected.has(memberId)) {
         if (selected.size > 1) selected.delete(memberId);
@@ -318,6 +320,8 @@ export function registerActionListeners(app) {
             currency: updated.parsed.currency,
             description: updated.parsed.description,
             paidBy: updated.parsed.paidBy,
+            payers: updated.payers,
+            consumers: updated.consumers,
             selectedMembers: updated.selectedMembers,
             conversion: updated.conversion,
           }),
@@ -360,9 +364,12 @@ export function registerActionListeners(app) {
 
       await finalizeReviewCommit(reviewId, () =>
         commitExpense({
-          parsed: draft.parsed,
+          parsed: {
+            ...draft.parsed,
+            debtors: draft.selectedMembers,
+          },
           group: draft.group,
-          participants: draft.selectedMembers,
+          participants: draft.consumers ?? draft.selectedMembers,
           userId: draft.userId,
           client,
           reply: (payload) => updateSourceMessage({ client, body, payload }),
@@ -418,6 +425,7 @@ export function registerActionListeners(app) {
           amount: draft.parsed.amount,
           currency: draft.parsed.currency,
           selectedMembers: draft.selectedMembers,
+          consumers: draft.consumers,
           memberNames,
         }),
       });
@@ -491,7 +499,8 @@ export function registerActionListeners(app) {
       });
 
       const total = customSplits.reduce((sum, split) => sum + split.amount, 0);
-      const expected = Number(draft.parsed.amount);
+      const consumerCount = draft.consumers?.length || draft.selectedMembers.length || 1;
+      const expected = (Number(draft.parsed.amount) / consumerCount) * draft.selectedMembers.length;
       if (Math.abs(total - expected) > 0.02) {
         await ack({
           response_action: 'errors',
@@ -504,9 +513,12 @@ export function registerActionListeners(app) {
 
       await finalizeReviewCommit(reviewId, () =>
         commitExpense({
-          parsed: draft.parsed,
+          parsed: {
+            ...draft.parsed,
+            debtors: draft.selectedMembers,
+          },
           group: draft.group,
-          participants: draft.selectedMembers,
+          participants: draft.consumers ?? draft.selectedMembers,
           userId: body.user.id,
           client,
           reply: async (payload) => {
