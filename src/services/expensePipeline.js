@@ -88,6 +88,10 @@ export async function logExpense({
     ...new Set([parsed.paidBy, ...parsed.coPayerMentionIds, ...coPayerResolved]),
   ].filter(Boolean);
 
+  if (!parsed.paidBy && parsed.payers.length > 0) {
+    parsed.paidBy = parsed.payers[0];
+  }
+
   const explicitParticipants = [...new Set([...parsed.slackMentions, ...participantResolved])];
   const hasExplicitParticipants = explicitParticipants.length > 0;
   const consumers = hasExplicitParticipants ? explicitParticipants : (group?.members ?? []);
