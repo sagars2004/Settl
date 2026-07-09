@@ -66,7 +66,7 @@ if (!socketMode) {
 
 // GLOBAL DEBUG LOGGER: logs every single event Slack sends us
 app.use(async ({ body, next }) => {
-  console.log('[GLOBAL LOGGER] Received payload:', JSON.stringify({ type: body.type, eventType: body.event?.type, eventSubtype: body.event?.subtype }));
+  console.log('[GLOBAL LOGGER] Full event:', JSON.stringify(body.event));
   await next();
 });
 
