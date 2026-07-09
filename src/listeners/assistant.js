@@ -74,6 +74,7 @@ export function registerAssistant(app) {
     },
 
     userMessage: async ({ message, client, say, setStatus, getThreadContext, logger }) => {
+      logger.info('[assistant] userMessage received:', message.text, 'subtype:', message.subtype);
       if (message.subtype) return;
 
       try {
