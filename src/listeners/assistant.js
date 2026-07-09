@@ -149,6 +149,51 @@ export function registerAssistant(app) {
   });
 
   app.assistant(assistant);
+
+  // Fallback for non-threaded DMs (e.g. typing directly in the App Home Messages tab)
+  app.message(async ({ message, client, say, logger }) => {
+    // Ignore threaded messages (Assistant handles those) and non-IMs
+    if (message.thread_ts || message.channel_type !== 'im' || message.subtype) return;
+
+    try {
+      const parsed = await parseExpense(message.text ?? '', {
+        channelId: message.channel,
+        authorId: message.user,
+      });
+
+      switch (parsed.intent) {
+        case 'summary':
+          await respondWithSummary({ contextChannel: message.channel, say });
+          break;
+        case 'settle':
+          await respondWithSettle({
+            contextChannel: message.channel,
+            messageText: message.text ?? '',
+            userId: message.user,
+            client,
+            say,
+            parsed,
+          });
+          break;
+        case 'log_expense':
+          await logExpense({
+            text: message.text ?? '',
+            channelId: message.channel, // DMs don't have groups, so this will cleanly return "No group in this channel"
+            userId: message.user,
+            client,
+            parsed,
+            assistantChannelId: message.channel,
+            reply: (payload) => say(payload),
+            logger,
+          });
+          break;
+        default:
+          await respondWithHelp({ contextChannel: null, say });
+      }
+    } catch (error) {
+      logger.error('[assistant] fallback message failed:', error);
+    }
+  });
 }
 
 /**
