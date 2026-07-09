@@ -80,7 +80,7 @@ app.error(async (error) => {
     await app.start();
   } else {
     const port = Number(process.env.PORT) || 3000;
-    await app.start(port, '0.0.0.0');
+    await app.start(port);
   }
 
   // Kick off the background scheduler that pings channels with aging balances.
