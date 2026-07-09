@@ -64,6 +64,12 @@ if (!socketMode) {
   registerOAuthRoutes(app);
 }
 
+// GLOBAL DEBUG LOGGER: logs every single event Slack sends us
+app.use(async ({ body, next }) => {
+  console.log('[GLOBAL LOGGER] Received payload:', JSON.stringify({ type: body.type, eventType: body.event?.type, eventSubtype: body.event?.subtype }));
+  await next();
+});
+
 // Wire the Slack WebClient into the datastore layer.
 bindDatastoreClient(app.client);
 
