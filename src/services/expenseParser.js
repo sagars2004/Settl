@@ -12,6 +12,11 @@
 import { SLACK_MENTION_PATTERN, BARE_MENTION_PATTERN } from '../utils/groupParser.js';
 import { aiParseExpense } from './aiParser.js';
 
+const IGNORED_PRONOUNS = new Set([
+  'we', 'us', 'i', 'me', 'they', 'them', 'everyone', 'all',
+  'he', 'she', 'him', 'her', 'nobody', 'anyone', 'somebody'
+]);
+
 /**
  * @typedef {Object} ParsedExpense
  * @property {'log_expense'|'summary'|'settle'|'help'} intent  Detected intent.
@@ -90,6 +95,9 @@ export async function parseExpense(text, context) {
 
   const intent = reconcileIntent(ai?.intent ?? inferIntent(remainder), remainder, amount);
 
+  const filteredParticipantBareHandles = participantBareHandles.filter(h => !IGNORED_PRONOUNS.has(h.toLowerCase()));
+  const filteredCoPayerBareHandles = [...new Set(coPayerBareHandles)].filter(h => !IGNORED_PRONOUNS.has(h.toLowerCase()));
+
   return {
     intent,
     description,
@@ -98,8 +106,8 @@ export async function parseExpense(text, context) {
     paidBy: context.authorId,
     participants: coPayerMentionIds.length ? [] : slackMentions,
     slackMentions: coPayerMentionIds.length ? [] : slackMentions,
-    bareHandles: participantBareHandles,
-    coPayerBareHandles: [...new Set(coPayerBareHandles)],
+    bareHandles: filteredParticipantBareHandles,
+    coPayerBareHandles: filteredCoPayerBareHandles,
     coPayerMentionIds,
     payers: [],
     waysCount,
