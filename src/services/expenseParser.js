@@ -23,7 +23,8 @@ const IGNORED_PRONOUNS = new Set([
  * @property {string} description   Human-readable label (e.g. "Team dinner").
  * @property {number|null} amount   Total amount in the detected currency.
  * @property {string} currency      ISO 4217 code (e.g. "USD", "EUR").
- * @property {string} paidBy        Slack user id of the payer.
+ * @property {string|null} paidBy   Slack user id of the author, or null if the author didn't pay.
+ * @property {string} authorId      Slack user id of the author.
  * @property {string[]} participants Slack user ids sharing the cost.
  * @property {string[]} slackMentions Resolved Slack-encoded @mentions.
  * @property {string[]} bareHandles Plain @handles to resolve via users.list.
@@ -98,12 +99,15 @@ export async function parseExpense(text, context) {
   const filteredParticipantBareHandles = participantBareHandles.filter(h => !IGNORED_PRONOUNS.has(h.toLowerCase()));
   const filteredCoPayerBareHandles = [...new Set(coPayerBareHandles)].filter(h => !IGNORED_PRONOUNS.has(h.toLowerCase()));
 
+  const authorPaid = ai ? ai.authorPaid : true;
+
   return {
     intent,
     description,
     amount,
     currency,
-    paidBy: context.authorId,
+    paidBy: authorPaid ? context.authorId : null,
+    authorId: context.authorId,
     participants: coPayerMentionIds.length ? [] : slackMentions,
     slackMentions: coPayerMentionIds.length ? [] : slackMentions,
     bareHandles: filteredParticipantBareHandles,

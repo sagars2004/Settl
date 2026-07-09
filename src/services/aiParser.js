@@ -17,6 +17,7 @@ const REQUEST_TIMEOUT_MS = 8000;
  * @property {string|null} currency  ISO 4217, uppercase.
  * @property {string|null} description
  * @property {number|null} waysCount  Explicit "N ways" count, if stated.
+ * @property {boolean} authorPaid  True if the author paid, false if ONLY someone else paid.
  * @property {string[]} [coPayerNames]  Bare names of people who paid alongside the author.
  */
 
@@ -33,7 +34,8 @@ const SYSTEM_PROMPT = [
   '- currency: 3-letter ISO code (USD, EUR, GBP, JPY...). Use "USD" for "$" or "bucks". null if no amount.',
   '- description: a short 2-4 word label for the expense, with no amounts or split words. null if none.',
   '- waysCount: integer ONLY if the user says "N ways"/"N people"/"between the N of us"; otherwise null.',
-  '- coPayerNames: array of bare names of anyone who paid *with* the author (e.g. "Tim and I paid" -> ["Tim"]). Empty array if only the author paid.',
+  '- authorPaid: boolean. true if the author paid or it is implicit (e.g. "I paid", "split $50", "we paid"). false if ONLY someone else paid (e.g. "Tim paid $50").',
+  '- coPayerNames: array of bare names of anyone who paid *with* or *instead of* the author (e.g. "Tim and I paid" -> ["Tim"]). Empty array if only the author paid.',
   'Return ONLY the JSON object — no prose, no markdown fences.',
   'Example input: "Tim and I paid $50 for lunch"',
   'Example output: {"intent":"log_expense","amount":50,"currency":"USD","description":"lunch","waysCount":null,"coPayerNames":["Tim"]}',
@@ -51,12 +53,13 @@ const JSON_SCHEMA = {
     currency: { type: ['string', 'null'] },
     description: { type: ['string', 'null'] },
     waysCount: { type: ['integer', 'null'] },
+    authorPaid: { type: 'boolean' },
     coPayerNames: {
       type: 'array',
       items: { type: 'string' },
     },
   },
-  required: ['intent', 'amount', 'currency', 'description', 'waysCount', 'coPayerNames'],
+  required: ['intent', 'amount', 'currency', 'description', 'waysCount', 'authorPaid', 'coPayerNames'],
   additionalProperties: false,
 };
 
@@ -278,12 +281,15 @@ function normalize(raw) {
         .map((name) => name.trim())
     : [];
 
+  const authorPaid = typeof raw?.authorPaid === 'boolean' ? raw.authorPaid : true;
+
   return {
     intent: normalizeIntent(raw?.intent, amount),
     amount,
     currency,
     description,
     waysCount,
+    authorPaid,
     coPayerNames,
   };
 }

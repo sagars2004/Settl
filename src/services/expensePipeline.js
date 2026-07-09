@@ -86,7 +86,7 @@ export async function logExpense({
 
   parsed.payers = [
     ...new Set([parsed.paidBy, ...parsed.coPayerMentionIds, ...coPayerResolved]),
-  ];
+  ].filter(Boolean);
 
   const explicitParticipants = [...new Set([...parsed.slackMentions, ...participantResolved])];
   const hasExplicitParticipants = explicitParticipants.length > 0;
@@ -151,7 +151,7 @@ export async function logExpense({
         amount,
         currency,
         description: parsed.description,
-        paidBy: parsed.paidBy,
+        paidBy: parsed.paidBy || parsed.payers[0] || userId,
         payers: parsed.payers,
         consumers: consumersForReview,
         selectedMembers,
