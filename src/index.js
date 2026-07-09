@@ -17,7 +17,7 @@ import { startNudgeAgent } from './agents/nudgeAgent.js';
 import { bindDatastoreClient } from './services/datastoreClient.js';
 import { registerOAuthRoutes } from './routes/oauth.js';
 
-const { App, LogLevel } = pkg;
+const { App, LogLevel, ExpressReceiver } = pkg;
 
 // Load .env without overriding tokens the Slack CLI injects during `slack run`.
 config({ override: false });
@@ -35,14 +35,22 @@ if (!botToken || !appToken) {
 // Socket Mode avoids a public HTTP endpoint during local dev.
 const socketMode = process.env.SLACK_SOCKET_MODE !== 'false';
 
+let receiver;
+if (!socketMode) {
+  receiver = new ExpressReceiver({
+    signingSecret: process.env.SLACK_SIGNING_SECRET || '',
+  });
+}
+
 const app = new App({
   token: botToken,
-  ...(process.env.SLACK_SIGNING_SECRET
+  ...(process.env.SLACK_SIGNING_SECRET && socketMode
     ? { signingSecret: process.env.SLACK_SIGNING_SECRET }
     : {}),
   socketMode,
   appToken: socketMode ? appToken : undefined,
   logLevel: process.env.LOG_LEVEL === 'debug' ? LogLevel.DEBUG : LogLevel.INFO,
+  ...(receiver ? { receiver } : {}),
 });
 
 // Register every listener group. Each module attaches its own handlers to the
